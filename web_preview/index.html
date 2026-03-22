@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Flight Slate Browser Preview</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #070b10;
+        --panel: #161c24;
+        --panel-edge: #2b3440;
+        --text: #e8eef6;
+        --muted: #8f9cac;
+        --accent: #5ee1ff;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: radial-gradient(circle at top, #122031 0%, var(--bg) 60%);
+        color: var(--text);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        display: grid;
+        place-items: center;
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: 1fr 280px;
+        gap: 20px;
+        align-items: start;
+        padding: 24px;
+      }
+
+      .board {
+        background: linear-gradient(180deg, #11161d 0%, #0b1016 100%);
+        border: 1px solid var(--panel-edge);
+        border-radius: 24px;
+        padding: 20px;
+        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+      }
+
+      canvas {
+        display: block;
+      }
+
+      .sidebar {
+        width: 280px;
+        background: rgba(20, 26, 34, 0.92);
+        border: 1px solid var(--panel-edge);
+        border-radius: 18px;
+        padding: 18px;
+        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+      }
+
+      .sidebar h1 {
+        margin: 0 0 12px;
+        font-size: 18px;
+      }
+
+      .meta {
+        font-size: 13px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+
+      .key {
+        margin-top: 14px;
+        padding-top: 14px;
+        border-top: 1px solid var(--panel-edge);
+      }
+
+      .status {
+        margin-top: 12px;
+        color: var(--accent);
+      }
+
+      .toggle {
+        margin-top: 14px;
+        padding-top: 14px;
+        border-top: 1px solid var(--panel-edge);
+      }
+
+      .tiny {
+        margin-top: 10px;
+        font-size: 12px;
+        color: var(--muted);
+        word-break: break-word;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="board">
+        <canvas id="matrix" width="1552" height="784"></canvas>
+      </div>
+      <aside class="sidebar">
+        <h1>Browser Preview</h1>
+        <div class="meta" id="pageLabel">Loading…</div>
+        <div class="status" id="statusLabel"></div>
+        <div class="key">
+          <div class="meta">Left/Right: page</div>
+          <div class="meta">Up/Down: frame</div>
+          <div class="meta">B: bounds overlay</div>
+          <div class="meta">C: center lines</div>
+        </div>
+        <div class="toggle">
+          <div class="meta" id="hoverLabel">Pixel: --</div>
+        </div>
+        <div class="tiny" id="analysisLabel"></div>
+      </aside>
+    </div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

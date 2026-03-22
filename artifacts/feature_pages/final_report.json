@@ -1,0 +1,1259 @@
+{
+  "text": [
+    {
+      "elapsed_s": 0.0,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            146,
+            255,
+            154
+          ],
+          [
+            242,
+            248,
+            255
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 5974,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ],
+        "small_width": 17,
+        "medium_width": 22,
+        "large_width": 22
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/text/frame_000.png",
+        "upscaled": "artifacts/feature_pages/text/frame_000@8x.png",
+        "ascii": "artifacts/feature_pages/text/frame_000.txt",
+        "report": "artifacts/feature_pages/text/frame_000.json"
+      }
+    }
+  ],
+  "overflow": [
+    {
+      "elapsed_s": 0.0,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            146,
+            255,
+            154
+          ],
+          [
+            242,
+            248,
+            255
+          ],
+          [
+            255,
+            209,
+            102
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 5464,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ],
+        "clip_width": 75,
+        "ellipsis_width": 75,
+        "scroll_offset": 0
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/overflow/frame_000.png",
+        "upscaled": "artifacts/feature_pages/overflow/frame_000@8x.png",
+        "ascii": "artifacts/feature_pages/overflow/frame_000.txt",
+        "report": "artifacts/feature_pages/overflow/frame_000.json"
+      }
+    },
+    {
+      "elapsed_s": 0.25,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            146,
+            255,
+            154
+          ],
+          [
+            242,
+            248,
+            255
+          ],
+          [
+            255,
+            209,
+            102
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 5464,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ],
+        "clip_width": 75,
+        "ellipsis_width": 75,
+        "scroll_offset": 3
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/overflow/frame_001.png",
+        "upscaled": "artifacts/feature_pages/overflow/frame_001@8x.png",
+        "ascii": "artifacts/feature_pages/overflow/frame_001.txt",
+        "report": "artifacts/feature_pages/overflow/frame_001.json"
+      }
+    },
+    {
+      "elapsed_s": 0.5,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            146,
+            255,
+            154
+          ],
+          [
+            242,
+            248,
+            255
+          ],
+          [
+            255,
+            209,
+            102
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 5464,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ],
+        "clip_width": 75,
+        "ellipsis_width": 75,
+        "scroll_offset": 6
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/overflow/frame_002.png",
+        "upscaled": "artifacts/feature_pages/overflow/frame_002@8x.png",
+        "ascii": "artifacts/feature_pages/overflow/frame_002.txt",
+        "report": "artifacts/feature_pages/overflow/frame_002.json"
+      }
+    },
+    {
+      "elapsed_s": 0.75,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            146,
+            255,
+            154
+          ],
+          [
+            242,
+            248,
+            255
+          ],
+          [
+            255,
+            209,
+            102
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 5464,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ],
+        "clip_width": 75,
+        "ellipsis_width": 75,
+        "scroll_offset": 9
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/overflow/frame_003.png",
+        "upscaled": "artifacts/feature_pages/overflow/frame_003@8x.png",
+        "ascii": "artifacts/feature_pages/overflow/frame_003.txt",
+        "report": "artifacts/feature_pages/overflow/frame_003.json"
+      }
+    }
+  ],
+  "icons": [
+    {
+      "elapsed_s": 0.0,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            146,
+            255,
+            154
+          ],
+          [
+            242,
+            248,
+            255
+          ],
+          [
+            255,
+            111,
+            124
+          ],
+          [
+            255,
+            209,
+            102
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 5582,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ],
+        "icon_count": 6
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/icons/frame_000.png",
+        "upscaled": "artifacts/feature_pages/icons/frame_000@8x.png",
+        "ascii": "artifacts/feature_pages/icons/frame_000.txt",
+        "report": "artifacts/feature_pages/icons/frame_000.json"
+      }
+    }
+  ],
+  "images_logos": [
+    {
+      "elapsed_s": 0.0,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            146,
+            255,
+            154
+          ],
+          [
+            242,
+            248,
+            255
+          ],
+          [
+            255,
+            209,
+            102
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 5605,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ],
+        "logo_count": 3,
+        "image_count": 1
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/images_logos/frame_000.png",
+        "upscaled": "artifacts/feature_pages/images_logos/frame_000@8x.png",
+        "ascii": "artifacts/feature_pages/images_logos/frame_000.txt",
+        "report": "artifacts/feature_pages/images_logos/frame_000.json"
+      }
+    }
+  ],
+  "container": [
+    {
+      "elapsed_s": 0.0,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            242,
+            248,
+            255
+          ],
+          [
+            255,
+            209,
+            102
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 6551,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ],
+        "border_pixels": 114
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/container/frame_000.png",
+        "upscaled": "artifacts/feature_pages/container/frame_000@8x.png",
+        "ascii": "artifacts/feature_pages/container/frame_000.txt",
+        "report": "artifacts/feature_pages/container/frame_000.json"
+      }
+    }
+  ],
+  "shapes": [
+    {
+      "elapsed_s": 0.0,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            146,
+            255,
+            154
+          ],
+          [
+            242,
+            248,
+            255
+          ],
+          [
+            255,
+            111,
+            124
+          ],
+          [
+            255,
+            209,
+            102
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 6514,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ]
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/shapes/frame_000.png",
+        "upscaled": "artifacts/feature_pages/shapes/frame_000@8x.png",
+        "ascii": "artifacts/feature_pages/shapes/frame_000.txt",
+        "report": "artifacts/feature_pages/shapes/frame_000.json"
+      }
+    }
+  ],
+  "badges": [
+    {
+      "elapsed_s": 0.0,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            146,
+            255,
+            154
+          ],
+          [
+            242,
+            248,
+            255
+          ],
+          [
+            255,
+            111,
+            124
+          ],
+          [
+            255,
+            209,
+            102
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 4287,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ]
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/badges/frame_000.png",
+        "upscaled": "artifacts/feature_pages/badges/frame_000@8x.png",
+        "ascii": "artifacts/feature_pages/badges/frame_000.txt",
+        "report": "artifacts/feature_pages/badges/frame_000.json"
+      }
+    }
+  ],
+  "progress": [
+    {
+      "elapsed_s": 0.0,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            242,
+            248,
+            255
+          ],
+          [
+            255,
+            209,
+            102
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 4090,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ],
+        "fill_widths": [
+          24,
+          67
+        ]
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/progress/frame_000.png",
+        "upscaled": "artifacts/feature_pages/progress/frame_000@8x.png",
+        "ascii": "artifacts/feature_pages/progress/frame_000.txt",
+        "report": "artifacts/feature_pages/progress/frame_000.json"
+      }
+    }
+  ],
+  "stats": [
+    {
+      "elapsed_s": 0.0,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            146,
+            255,
+            154
+          ],
+          [
+            242,
+            248,
+            255
+          ],
+          [
+            255,
+            111,
+            124
+          ],
+          [
+            255,
+            209,
+            102
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 6020,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ],
+        "value_widths": [
+          34,
+          34,
+          34
+        ]
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/stats/frame_000.png",
+        "upscaled": "artifacts/feature_pages/stats/frame_000@8x.png",
+        "ascii": "artifacts/feature_pages/stats/frame_000.txt",
+        "report": "artifacts/feature_pages/stats/frame_000.json"
+      }
+    }
+  ],
+  "lists": [
+    {
+      "elapsed_s": 0.0,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            242,
+            248,
+            255
+          ],
+          [
+            255,
+            209,
+            102
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 5724,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ],
+        "row_count": 2
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/lists/frame_000.png",
+        "upscaled": "artifacts/feature_pages/lists/frame_000@8x.png",
+        "ascii": "artifacts/feature_pages/lists/frame_000.txt",
+        "report": "artifacts/feature_pages/lists/frame_000.json"
+      }
+    }
+  ],
+  "states": [
+    {
+      "elapsed_s": 0.0,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            146,
+            255,
+            154
+          ],
+          [
+            242,
+            248,
+            255
+          ],
+          [
+            255,
+            111,
+            124
+          ],
+          [
+            255,
+            209,
+            102
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 5726,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ],
+        "state_count": 2
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/states/frame_000.png",
+        "upscaled": "artifacts/feature_pages/states/frame_000@8x.png",
+        "ascii": "artifacts/feature_pages/states/frame_000.txt",
+        "report": "artifacts/feature_pages/states/frame_000.json"
+      }
+    }
+  ],
+  "map": [
+    {
+      "elapsed_s": 0.0,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            22,
+            48,
+            71
+          ],
+          [
+            29,
+            58,
+            45
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            242,
+            248,
+            255
+          ],
+          [
+            255,
+            111,
+            124
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 3137,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ]
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/map/frame_000.png",
+        "upscaled": "artifacts/feature_pages/map/frame_000@8x.png",
+        "ascii": "artifacts/feature_pages/map/frame_000.txt",
+        "report": "artifacts/feature_pages/map/frame_000.json"
+      }
+    }
+  ],
+  "animation": [
+    {
+      "elapsed_s": 0.0,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            146,
+            255,
+            154
+          ],
+          [
+            242,
+            248,
+            255
+          ],
+          [
+            255,
+            111,
+            124
+          ],
+          [
+            255,
+            209,
+            102
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 4455,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ],
+        "blink_on": true,
+        "progress_width": 55,
+        "marquee_offset": 0
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/animation/frame_000.png",
+        "upscaled": "artifacts/feature_pages/animation/frame_000@8x.png",
+        "ascii": "artifacts/feature_pages/animation/frame_000.txt",
+        "report": "artifacts/feature_pages/animation/frame_000.json"
+      }
+    },
+    {
+      "elapsed_s": 0.25,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            146,
+            255,
+            154
+          ],
+          [
+            242,
+            248,
+            255
+          ],
+          [
+            255,
+            111,
+            124
+          ],
+          [
+            255,
+            209,
+            102
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 4455,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ],
+        "blink_on": true,
+        "progress_width": 69,
+        "marquee_offset": 2
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/animation/frame_001.png",
+        "upscaled": "artifacts/feature_pages/animation/frame_001@8x.png",
+        "ascii": "artifacts/feature_pages/animation/frame_001.txt",
+        "report": "artifacts/feature_pages/animation/frame_001.json"
+      }
+    },
+    {
+      "elapsed_s": 0.5,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            146,
+            255,
+            154
+          ],
+          [
+            242,
+            248,
+            255
+          ],
+          [
+            255,
+            111,
+            124
+          ],
+          [
+            255,
+            209,
+            102
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 4455,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ],
+        "blink_on": false,
+        "progress_width": 81,
+        "marquee_offset": 5
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/animation/frame_002.png",
+        "upscaled": "artifacts/feature_pages/animation/frame_002@8x.png",
+        "ascii": "artifacts/feature_pages/animation/frame_002.txt",
+        "report": "artifacts/feature_pages/animation/frame_002.json"
+      }
+    },
+    {
+      "elapsed_s": 0.75,
+      "analysis": {
+        "used_colors": [
+          [
+            8,
+            16,
+            24
+          ],
+          [
+            16,
+            32,
+            48
+          ],
+          [
+            40,
+            68,
+            92
+          ],
+          [
+            94,
+            225,
+            255
+          ],
+          [
+            138,
+            163,
+            184
+          ],
+          [
+            146,
+            255,
+            154
+          ],
+          [
+            242,
+            248,
+            255
+          ],
+          [
+            255,
+            111,
+            124
+          ],
+          [
+            255,
+            209,
+            102
+          ]
+        ],
+        "unexpected_colors": [],
+        "non_background_pixels": 4455,
+        "content_bounds": [
+          0,
+          0,
+          127,
+          63
+        ],
+        "blink_on": false,
+        "progress_width": 92,
+        "marquee_offset": 7
+      },
+      "paths": {
+        "raw": "artifacts/feature_pages/animation/frame_003.png",
+        "upscaled": "artifacts/feature_pages/animation/frame_003@8x.png",
+        "ascii": "artifacts/feature_pages/animation/frame_003.txt",
+        "report": "artifacts/feature_pages/animation/frame_003.json"
+      }
+    }
+  ]
+}
