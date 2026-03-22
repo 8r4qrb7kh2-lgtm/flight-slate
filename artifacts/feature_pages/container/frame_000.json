@@ -37,12 +37,12 @@
     ]
   ],
   "unexpected_colors": [],
-  "non_background_pixels": 6551,
+  "non_background_pixels": 5096,
   "content_bounds": [
     0,
     0,
     127,
     63
   ],
-  "border_pixels": 114
+  "border_pixels": 2
 }

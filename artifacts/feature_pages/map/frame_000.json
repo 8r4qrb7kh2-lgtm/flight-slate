@@ -16,11 +16,6 @@
       71
     ],
     [
-      29,
-      58,
-      45
-    ],
-    [
       40,
       68,
       92
@@ -39,15 +34,10 @@
       242,
       248,
       255
-    ],
-    [
-      255,
-      111,
-      124
     ]
   ],
   "unexpected_colors": [],
-  "non_background_pixels": 3137,
+  "non_background_pixels": 2825,
   "content_bounds": [
     0,
     0,

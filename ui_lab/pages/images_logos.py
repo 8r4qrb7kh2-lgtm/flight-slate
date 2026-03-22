@@ -7,7 +7,7 @@ from ui_lab.assets import image_registry, logo_registry
 from ui_lab.bitmap_font import FONT_5X7
 from ui_lab.canvas import PixelCanvas, Rect
 from ui_lab.pages.base import FeaturePage, PageFrame
-from ui_lab.pages.common import draw_bitmap_centered, draw_footer_note, draw_page_shell, draw_surface, three_column_rects, two_column_rects
+from ui_lab.pages.common import draw_bitmap_centered, draw_page_shell, draw_surface, three_column_rects, two_column_rects
 from ui_lab.palette import Palette
 
 
@@ -24,19 +24,17 @@ class ImagesLogosPage(FeaturePage):
     def render(self, canvas: PixelCanvas, frame: PageFrame) -> None:
         palette = self.palette
         draw_page_shell(canvas, palette, "IMAGES/LOGOS", f"{frame.index + 1:02d}/{frame.total:02d}")
-        top_boxes = three_column_rects(20, 16)
+        top_boxes = three_column_rects(20, 14)
         for box in top_boxes:
             draw_surface(canvas, box, palette)
         for box, key in zip(top_boxes, ("slate", "meridian", "harbor")):
-            draw_bitmap_centered(self.logos[key], canvas, box)
+            draw_bitmap_centered(self.logos[key], canvas, Rect(box.x + 2, box.y + 2, box.width - 4, box.height - 4))
 
-        image_box, label_box = two_column_rects(40, 16)
+        image_box, fit_box = two_column_rects(40, 16)
         draw_surface(canvas, image_box, palette)
-        draw_surface(canvas, label_box, palette)
-        draw_bitmap_centered(self.images["skyline"], canvas, image_box)
-        FONT_5X7.draw_boxed(canvas, label_box.x, 42, label_box.width, "BITMAP", palette.accent, align="center")
-        FONT_5X7.draw_boxed(canvas, label_box.x, 50, label_box.width, "LOGO FIT", palette.text_dim, align="center")
-        draw_footer_note(canvas, "SCALED BITMAP + STORED LOGO", palette)
+        draw_surface(canvas, fit_box, palette)
+        draw_bitmap_centered(self.images["skyline"], canvas, Rect(image_box.x + 2, image_box.y + 2, image_box.width - 4, image_box.height - 4))
+        draw_bitmap_centered(self.logos["meridian"], canvas, Rect(fit_box.x + 2, fit_box.y + 2, fit_box.width - 4, fit_box.height - 4))
 
     def analyze(self, canvas: PixelCanvas) -> dict[str, object]:
         palette = self.palette

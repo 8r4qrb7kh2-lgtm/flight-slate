@@ -37,14 +37,16 @@
     ]
   ],
   "unexpected_colors": [],
-  "non_background_pixels": 5974,
+  "non_background_pixels": 6328,
   "content_bounds": [
     0,
     0,
     127,
     63
   ],
-  "small_width": 17,
-  "medium_width": 22,
-  "large_width": 22
+  "micro_width": 11,
+  "regular_width": 17,
+  "large_width": 22,
+  "small_width": 11,
+  "medium_width": 17
 }

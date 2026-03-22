@@ -5,7 +5,7 @@ from __future__ import annotations
 from ui_lab.assets import PixelBitmap
 from ui_lab.bitmap_font import FONT_5X7
 from ui_lab.canvas import PixelCanvas, Rect
-from ui_lab.pages.common import draw_surface
+from ui_lab.pages.common import draw_bitmap_centered, draw_surface
 from ui_lab.palette import Color, Palette
 
 
@@ -14,12 +14,12 @@ def draw_badge(canvas: PixelCanvas, rect: Rect, text: str, palette: Palette, acc
     return FONT_5X7.draw_boxed(
         canvas,
         rect.x + 2,
-        rect.y + 1,
+        rect.y,
         rect.width - 4,
         text,
         accent,
         align="center",
-        height=rect.height - 2,
+        height=rect.height,
         valign="middle",
     )
 
@@ -65,12 +65,12 @@ def draw_stat_block(
     icon: PixelBitmap | None = None,
 ) -> dict[str, object]:
     draw_surface(canvas, rect, palette)
-    text_x = rect.x + 2
-    text_width = rect.width - 4
+    text_x = rect.x + 1
+    text_width = rect.width - 2
     if icon is not None:
-        icon.draw(canvas, rect.x + (rect.width - icon.width) // 2, rect.y + 3)
-    FONT_5X7.draw_boxed(canvas, text_x, rect.y + 15, text_width, label, palette.text_dim, align="center")
-    FONT_5X7.draw_boxed(canvas, text_x, rect.y + 22, text_width, value, accent, scale=2, align="center")
+        draw_bitmap_centered(icon, canvas, Rect(rect.x + 2, rect.y + 3, rect.width - 4, 8))
+    FONT_5X7.draw_boxed(canvas, text_x, rect.y + 14, text_width, value, accent, scale=2, align="center")
+    FONT_5X7.draw_boxed(canvas, text_x, rect.y + 29, text_width, label, palette.text_dim, align="center")
     return {"value_width": FONT_5X7.measure(value, scale=2)[0]}
 
 
@@ -88,22 +88,26 @@ def draw_list_item(
     edge = palette.text if selected else palette.panel_edge
     draw_surface(canvas, rect, palette, fill=palette.panel, edge=edge)
     if bitmap is not None:
-        bitmap.draw(canvas, rect.x + 2, rect.y + max(1, (rect.height - bitmap.height) // 2))
-    text_x = rect.x + (14 if bitmap is not None else 3)
-    text_width = rect.width - (text_x - rect.x) - 24
-    title_y = rect.y + 1
-    subtitle_y = rect.y + 8
+        logo_box = Rect(rect.x + 3, rect.y + 2, 20, rect.height - 4)
+        draw_bitmap_centered(bitmap, canvas, logo_box)
+        text_x = logo_box.right + 4
+    else:
+        text_x = rect.x + 4
+    right_width = 20
+    text_width = rect.width - (text_x - rect.x) - right_width - 4
+    title_y = rect.y + 2
+    subtitle_y = rect.y + 11
     FONT_5X7.draw_boxed(canvas, text_x, title_y, text_width, title, palette.text, align="left")
     FONT_5X7.draw_boxed(canvas, text_x, subtitle_y, text_width, subtitle, palette.text_dim, align="left")
     FONT_5X7.draw_boxed(
         canvas,
-        rect.right - 24,
-        rect.y + 1,
-        20,
+        rect.right - right_width - 2,
+        rect.y + 2,
+        right_width,
         right_text,
         accent,
         align="right",
-        height=rect.height - 2,
+        height=rect.height - 4,
         valign="middle",
     )
 
@@ -119,28 +123,40 @@ def draw_state_card(
 ) -> None:
     draw_surface(canvas, rect, palette, fill=palette.panel, edge=accent)
     if icon is not None:
-        icon.draw(canvas, rect.x + 4, rect.y + max(1, (rect.height - icon.height) // 2))
-        text_x = rect.x + 20
+        draw_bitmap_centered(icon, canvas, Rect(rect.x + 4, rect.y + 2, 8, rect.height - 4))
+        text_x = rect.x + 16
     else:
         text_x = rect.x + 4
     text_width = rect.width - (text_x - rect.x) - 4
-    FONT_5X7.draw_boxed(
-        canvas,
-        text_x,
-        rect.y + 1,
-        text_width,
-        title,
-        accent,
-        align="left",
-    )
-    if rect.height >= 16:
+    if subtitle and rect.height >= 16:
         FONT_5X7.draw_boxed(
             canvas,
             text_x,
-            rect.y + 8,
+            rect.y + 2,
+            text_width,
+            title,
+            accent,
+            align="left",
+        )
+        FONT_5X7.draw_boxed(
+            canvas,
+            text_x,
+            rect.y + 9,
             text_width,
             subtitle,
             palette.text_dim,
             align="left",
             clip=True,
+        )
+    else:
+        FONT_5X7.draw_boxed(
+            canvas,
+            text_x,
+            rect.y,
+            text_width,
+            title,
+            accent,
+            align="left",
+            height=rect.height,
+            valign="middle",
         )

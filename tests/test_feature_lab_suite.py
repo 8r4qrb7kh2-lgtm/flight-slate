@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from ui_lab.app import FeatureLabApp
+from ui_lab.bitmap_font import FONT_5X7
 from ui_lab.palette import Palette
 
 
@@ -75,6 +76,28 @@ class FeatureLabSuiteTests(unittest.TestCase):
         for y in range(48, 55):
             for x in list(range(0, 8)) + list(range(120, 128)):
                 self.assertNotEqual(pixels[x, y], palette.success)
+
+    def test_page_counter_fits_header_box(self):
+        self.assertEqual(FONT_5X7.fit("13/13", 32), "13/13")
+
+    def test_bottom_safe_rows_do_not_carry_component_content(self):
+        app = FeatureLabApp()
+        palette = Palette()
+        allowed_bottom_colors = {palette.background, palette.panel, palette.panel_edge}
+
+        for index, page in enumerate(app.pages):
+            app.page_index = index
+            frame_times = [0.0] if not page.animated else [0.0, 0.5]
+            for elapsed_s in frame_times:
+                canvas = app.render(elapsed_s)
+                pixels = canvas.image.load()
+                for y in (61,):
+                    for x in range(1, 127):
+                        self.assertIn(
+                            pixels[x, y],
+                            allowed_bottom_colors,
+                            msg=f"{page.key} @ {elapsed_s} leaked content into bottom safe rows",
+                        )
 
 
 if __name__ == "__main__":

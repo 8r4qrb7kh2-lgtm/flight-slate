@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from ui_lab.analysis import basic_analysis
 from ui_lab.assets import icon_registry
-from ui_lab.bitmap_font import FONT_5X7
+from ui_lab.bitmap_font import FONT_3X5
 from ui_lab.canvas import PixelCanvas, Rect
 from ui_lab.pages.base import FeaturePage, PageFrame
-from ui_lab.pages.common import draw_bitmap_centered, draw_footer_note, draw_page_shell, draw_surface, three_column_rects
+from ui_lab.pages.common import draw_bitmap_centered, draw_page_shell, draw_surface, three_column_rects
 from ui_lab.palette import Palette
 
 
@@ -23,27 +23,16 @@ class IconsPage(FeaturePage):
     def render(self, canvas: PixelCanvas, frame: PageFrame) -> None:
         palette = self.palette
         draw_page_shell(canvas, palette, "ICONS", f"{frame.index + 1:02d}/{frame.total:02d}")
-        keys = ["plane", "clock", "pin", "warning", "live", "list"]
-        for index, key in enumerate(keys):
+        labels = [("plane", "PLAN"), ("clock", "CLOCK"), ("pin", "PIN"), ("warning", "WARN"), ("live", "LIVE"), ("list", "LIST")]
+        for index, (key, label) in enumerate(labels):
             column = index % 3
             row = index // 3
-            tile = three_column_rects(20 + row * 18, 16)[column]
+            label_y = 18 + row * 20
+            tile = three_column_rects(24 + row * 20, 11)[column]
+            FONT_3X5.draw_boxed(canvas, tile.x, label_y, tile.width, label, palette.text, align="center")
             draw_surface(canvas, tile, palette)
-            icon_area = Rect(tile.x + 2, tile.y + 1, 10, 14)
-            text_area = Rect(tile.x + 14, tile.y + 1, tile.width - 17, 14)
+            icon_area = Rect(tile.x + 2, tile.y + 1, tile.width - 4, tile.height - 2)
             draw_bitmap_centered(self.icons[key], canvas, icon_area)
-            FONT_5X7.draw_boxed(
-                canvas,
-                text_area.x,
-                text_area.y,
-                text_area.width,
-                key[:4],
-                palette.text,
-                align="left",
-                height=text_area.height,
-                valign="middle",
-            )
-        draw_footer_note(canvas, "CUSTOM ICON GRID", palette)
 
     def analyze(self, canvas: PixelCanvas) -> dict[str, object]:
         palette = self.palette

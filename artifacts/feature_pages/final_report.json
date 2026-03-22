@@ -41,16 +41,18 @@
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 5974,
+        "non_background_pixels": 6328,
         "content_bounds": [
           0,
           0,
           127,
           63
         ],
-        "small_width": 17,
-        "medium_width": 22,
-        "large_width": 22
+        "micro_width": 11,
+        "regular_width": 17,
+        "large_width": 22,
+        "small_width": 11,
+        "medium_width": 17
       },
       "paths": {
         "raw": "artifacts/feature_pages/text/frame_000.png",
@@ -107,15 +109,15 @@
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 5464,
+        "non_background_pixels": 5096,
         "content_bounds": [
           0,
           0,
           127,
           63
         ],
-        "clip_width": 75,
-        "ellipsis_width": 75,
+        "clip_width": 87,
+        "ellipsis_width": 87,
         "scroll_offset": 0
       },
       "paths": {
@@ -171,15 +173,15 @@
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 5464,
+        "non_background_pixels": 5096,
         "content_bounds": [
           0,
           0,
           127,
           63
         ],
-        "clip_width": 75,
-        "ellipsis_width": 75,
+        "clip_width": 87,
+        "ellipsis_width": 87,
         "scroll_offset": 3
       },
       "paths": {
@@ -235,15 +237,15 @@
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 5464,
+        "non_background_pixels": 5096,
         "content_bounds": [
           0,
           0,
           127,
           63
         ],
-        "clip_width": 75,
-        "ellipsis_width": 75,
+        "clip_width": 87,
+        "ellipsis_width": 87,
         "scroll_offset": 6
       },
       "paths": {
@@ -299,15 +301,15 @@
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 5464,
+        "non_background_pixels": 5096,
         "content_bounds": [
           0,
           0,
           127,
           63
         ],
-        "clip_width": 75,
-        "ellipsis_width": 75,
+        "clip_width": 87,
+        "ellipsis_width": 87,
         "scroll_offset": 9
       },
       "paths": {
@@ -370,7 +372,7 @@
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 5582,
+        "non_background_pixels": 4687,
         "content_bounds": [
           0,
           0,
@@ -434,7 +436,7 @@
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 5605,
+        "non_background_pixels": 5312,
         "content_bounds": [
           0,
           0,
@@ -494,14 +496,14 @@
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 6551,
+        "non_background_pixels": 5096,
         "content_bounds": [
           0,
           0,
           127,
           63
         ],
-        "border_pixels": 114
+        "border_pixels": 2
       },
       "paths": {
         "raw": "artifacts/feature_pages/container/frame_000.png",
@@ -563,7 +565,7 @@
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 6514,
+        "non_background_pixels": 4896,
         "content_bounds": [
           0,
           0,
@@ -631,7 +633,7 @@
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 4287,
+        "non_background_pixels": 4232,
         "content_bounds": [
           0,
           0,
@@ -689,7 +691,7 @@
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 4090,
+        "non_background_pixels": 4135,
         "content_bounds": [
           0,
           0,
@@ -761,7 +763,7 @@
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 6020,
+        "non_background_pixels": 6176,
         "content_bounds": [
           0,
           0,
@@ -824,7 +826,7 @@
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 5724,
+        "non_background_pixels": 6552,
         "content_bounds": [
           0,
           0,
@@ -893,7 +895,7 @@
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 5726,
+        "non_background_pixels": 5768,
         "content_bounds": [
           0,
           0,
@@ -931,11 +933,6 @@
             71
           ],
           [
-            29,
-            58,
-            45
-          ],
-          [
             40,
             68,
             92
@@ -954,15 +951,10 @@
             242,
             248,
             255
-          ],
-          [
-            255,
-            111,
-            124
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 3137,
+        "non_background_pixels": 2825,
         "content_bounds": [
           0,
           0,
@@ -1030,7 +1022,7 @@
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 4455,
+        "non_background_pixels": 4318,
         "content_bounds": [
           0,
           0,
@@ -1099,7 +1091,7 @@
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 4455,
+        "non_background_pixels": 4318,
         "content_bounds": [
           0,
           0,
@@ -1168,7 +1160,7 @@
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 4455,
+        "non_background_pixels": 4318,
         "content_bounds": [
           0,
           0,
@@ -1237,7 +1229,7 @@
           ]
         ],
         "unexpected_colors": [],
-        "non_background_pixels": 4455,
+        "non_background_pixels": 4318,
         "content_bounds": [
           0,
           0,
