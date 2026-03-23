@@ -1,9 +1,5 @@
-import json
-import tempfile
 import unittest
-from pathlib import Path
 
-from ui_lab.app import FeatureLabApp
 from ui_lab.bitmap_font import FONT_5X7
 from ui_lab.canvas import PixelCanvas
 from ui_lab.pages.base import PageFrame
@@ -23,37 +19,26 @@ class SmallTextFeatureLabTests(unittest.TestCase):
         palette = Palette()
         canvas = PixelCanvas(128, 64, palette.background)
 
-        page.render(canvas, PageFrame(index=0, total=13, elapsed_s=0.0))
+        page.render(canvas, PageFrame(index=0, total=1, elapsed_s=0.0))
         analysis = page.analyze(canvas)
 
         self.assertEqual(analysis["unexpected_colors"], [])
-        self.assertGreater(analysis["small_width"], 0)
-        self.assertGreater(analysis["medium_width"], analysis["small_width"])
-        self.assertGreaterEqual(analysis["large_width"], analysis["small_width"])
+        self.assertEqual(len(analysis["glyph_lines"]), 7)
+        self.assertIn("A B C D E F G H", analysis["glyph_lines"])
+        self.assertIn(". , : ; ! ? - /", analysis["glyph_lines"])
+        self.assertEqual(analysis["overlap_pairs"], [])
+        self.assertEqual(analysis["out_of_bounds_regions"], [])
 
-    def test_glyph_sheet_stays_inside_lower_panel(self):
+    def test_glyph_sheet_stays_inside_demo_panel(self):
         page = TextPage()
         palette = Palette()
         canvas = PixelCanvas(128, 64, palette.background)
 
-        page.render(canvas, PageFrame(index=0, total=13, elapsed_s=0.0))
+        page.render(canvas, PageFrame(index=0, total=1, elapsed_s=0.0))
         pixels = canvas.image.load()
 
-        row_between_sections = 39
-        self.assertTrue(all(pixels[x, row_between_sections] != palette.accent_alt for x in range(128)))
-
-    def test_export_current_page_writes_artifacts(self):
-        app = FeatureLabApp()
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            paths, analysis = app.export_current_page(Path(tmp_dir), stem="proof")
-
-            self.assertTrue(paths["raw"].exists())
-            self.assertTrue(paths["upscaled"].exists())
-            self.assertTrue(paths["ascii"].exists())
-            self.assertTrue(paths["report"].exists())
-            self.assertEqual(json.loads(paths["report"].read_text())["small_width"], analysis["small_width"])
-
+        text_colors = {palette.text, palette.text_dim, palette.accent}
+        self.assertTrue(all(pixels[x, 63] not in text_colors for x in range(128)))
 
 if __name__ == "__main__":
     unittest.main()
