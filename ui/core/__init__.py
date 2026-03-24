@@ -2,15 +2,13 @@
 
 from ui.core.app import App
 from ui.core.colors import colors
-from ui.core.fonts import FONT_5x7, FONT_5X7
-from ui.core.widgets import Column, Panel, Text
+from ui.core.widgets import Column, Panel, Row, Text
 
 __all__ = [
     "App",
     "Column",
+    "Row",
     "Panel",
     "Text",
     "colors",
-    "FONT_5x7",
-    "FONT_5X7",
 ]

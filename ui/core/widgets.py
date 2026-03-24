@@ -61,10 +61,12 @@ class Panel(Widget):
     def draw(self, canvas: PixelCanvas, rect: Rect) -> None:
         canvas.rect(rect, fill=self.bg, outline=self.border)
 
-        inner_x = rect.x + self.padding
-        inner_y = rect.y + self.padding
-        inner_width = max(0, rect.width - self.padding * 2)
-        inner_height = max(0, rect.height - self.padding * 2)
+        border_inset = 1 if self.border is not None else 0
+        inset = self.padding + border_inset
+        inner_x = rect.x + inset
+        inner_y = rect.y + inset
+        inner_width = max(0, rect.width - inset * 2)
+        inner_height = max(0, rect.height - inset * 2)
         if self.child is None or inner_width == 0 or inner_height == 0:
             return
 
@@ -75,9 +77,21 @@ class Panel(Widget):
 class Column(Widget):
     children: list[Widget]
     gap: int = 0
+    sizes: list[int] | None = None
 
     def draw(self, canvas: PixelCanvas, rect: Rect) -> None:
         if rect.width <= 0 or rect.height <= 0 or not self.children:
+            return
+
+        if self.sizes is not None:
+            _draw_weighted_stack(
+                canvas=canvas,
+                rect=rect,
+                children=self.children,
+                gap=self.gap,
+                sizes=self.sizes,
+                horizontal=False,
+            )
             return
 
         cursor_y = rect.y
@@ -94,6 +108,33 @@ class Column(Widget):
             cursor_y += draw_height
             if index != len(self.children) - 1:
                 cursor_y += self.gap
+
+
+@dataclass
+class Row(Widget):
+    children: list[Widget]
+    gap: int = 0
+    sizes: list[int] | None = None
+
+    def draw(self, canvas: PixelCanvas, rect: Rect) -> None:
+        if rect.width <= 0 or rect.height <= 0 or not self.children:
+            return
+
+        if self.sizes is None:
+            slot_count = len(self.children)
+            sizes = [1] * slot_count
+        else:
+            slot_count = len(self.sizes)
+            sizes = self.sizes
+
+        _draw_weighted_stack(
+            canvas=canvas,
+            rect=rect,
+            children=self.children,
+            gap=self.gap,
+            sizes=sizes,
+            horizontal=True,
+        )
 
 
 def _wrap_text(font: BitmapFont, text: str, width: int) -> list[str]:
@@ -130,9 +171,11 @@ def _estimate_height(widget: Widget, width: int) -> int:
             return 0
         return (line_count * widget.font.height) + ((line_count - 1) * line_spacing)
     if isinstance(widget, Panel):
-        inner_width = max(0, width - widget.padding * 2)
+        border_inset = 1 if widget.border is not None else 0
+        inset = widget.padding + border_inset
+        inner_width = max(0, width - inset * 2)
         child_height = _estimate_height(widget.child, inner_width)
-        return child_height + (widget.padding * 2)
+        return child_height + (inset * 2)
     if isinstance(widget, Column):
         total = 0
         for idx, child in enumerate(widget.children):
@@ -141,3 +184,69 @@ def _estimate_height(widget: Widget, width: int) -> int:
                 total += widget.gap
         return total
     return 0
+
+
+def _draw_weighted_stack(
+    canvas: PixelCanvas,
+    rect: Rect,
+    children: list[Widget],
+    gap: int,
+    sizes: list[int],
+    horizontal: bool,
+) -> None:
+    if not sizes:
+        raise ValueError("sizes must contain at least one slot")
+
+    if len(children) > len(sizes):
+        raise ValueError("children exceed configured slot count")
+
+    if any(size < 0 for size in sizes):
+        raise ValueError("sizes must be non-negative")
+
+    size_total = sum(sizes)
+    if size_total <= 0:
+        raise ValueError("sizes must sum to a positive value")
+
+    gap = max(0, gap)
+    slot_count = len(sizes)
+    axis_total = rect.width if horizontal else rect.height
+    usable_total = max(0, axis_total - (gap * (slot_count - 1)))
+    slot_extents = _allocate_weighted_extents(usable_total, sizes)
+
+    cursor_x = rect.x
+    cursor_y = rect.y
+    for index, slot_extent in enumerate(slot_extents):
+        if index < len(children) and slot_extent > 0:
+            if horizontal:
+                child_rect = Rect(cursor_x, rect.y, slot_extent, rect.height)
+            else:
+                child_rect = Rect(rect.x, cursor_y, rect.width, slot_extent)
+            children[index].draw(canvas, child_rect)
+
+        if horizontal:
+            cursor_x += slot_extent
+            if index != slot_count - 1:
+                cursor_x += gap
+        else:
+            cursor_y += slot_extent
+            if index != slot_count - 1:
+                cursor_y += gap
+
+
+def _allocate_weighted_extents(total: int, sizes: list[int]) -> list[int]:
+    if total <= 0:
+        return [0] * len(sizes)
+
+    size_total = sum(sizes)
+    cumulative = 0
+    previous_edge = 0
+    extents: list[int] = []
+
+    # Derive slot edges from cumulative integer proportions.
+    for size in sizes:
+        cumulative += size
+        edge = (total * cumulative) // size_total
+        extents.append(edge - previous_edge)
+        previous_edge = edge
+
+    return extents
