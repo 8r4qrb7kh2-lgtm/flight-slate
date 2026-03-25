@@ -39,8 +39,8 @@ def load_c_font_frames(path: Path) -> tuple[int, int, list[list[list[int]]]]:
 
 
 def load_project_c_font(filename: str) -> tuple[int, int, list[list[list[int]]]]:
-	root = Path(__file__).resolve().parents[2]
-	return load_c_font_frames(root / filename)
+	source_dir = Path(__file__).resolve().parent / "source"
+	return load_c_font_frames(source_dir / filename)
 
 
 def _extract_define(content: str, pattern: str) -> int:

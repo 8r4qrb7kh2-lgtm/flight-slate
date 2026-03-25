@@ -17,6 +17,7 @@ class MockRGBMatrix:
     LED_GAP = 4
     LED_PITCH = LED_DIAMETER + LED_GAP
     BORDER = 12
+    HUD_HEIGHT = 18
     BACKGROUND = "#000000"
 
     def __init__(self, options: RGBMatrixOptions | None = None) -> None:
@@ -60,7 +61,7 @@ class MockRGBMatrix:
         self._panel_width = self.width * self.LED_PITCH
         self._panel_height = self.height * self.LED_PITCH
         canvas_width = self.BORDER * 2 + self._panel_width
-        canvas_height = self.BORDER * 2 + self._panel_height
+        canvas_height = self.BORDER * 2 + self.HUD_HEIGHT + self._panel_height
         self.canvas = tk.Canvas(
             self.root,
             width=canvas_width,
@@ -75,10 +76,19 @@ class MockRGBMatrix:
 
         self._panel_image_id = self.canvas.create_image(
             self.BORDER,
-            self.BORDER,
+            self.BORDER + self.HUD_HEIGHT,
             anchor="nw",
             image="",
         )
+        self._perf_hud_id = self.canvas.create_text(
+            self.BORDER,
+            4,
+            anchor="nw",
+            fill="#9CF7A1",
+            font=("Consolas", 10, "bold"),
+            text="FPS --.-/120.0 | miss 0/0 | late avg 0.00ms max 0.00ms",
+        )
+
     def SetPixel(self, x: int, y: int, r: int, g: int, b: int) -> None:
         if self._closed or not (0 <= x < self.width and 0 <= y < self.height):
             return
@@ -135,6 +145,29 @@ class MockRGBMatrix:
         self._framebuffer[:] = frame_bytes
         self._dirty_pixels.clear()
         self._frame_dirty = True
+
+    def SetPerformanceStats(
+        self,
+        *,
+        target_hz: float,
+        actual_hz: float,
+        misses: int,
+        frames: int,
+        avg_overrun_ms: float,
+        max_overrun_ms: float,
+        minor_late: int,
+        major_late: int,
+    ) -> None:
+        if self._closed:
+            return
+        status = "ok" if misses == 0 else "late"
+        summary = (
+            f"FPS {actual_hz:5.1f}/{target_hz:.1f} [{status}] | "
+            f"miss {misses}/{frames} | "
+            f"late avg {avg_overrun_ms:.2f}ms max {max_overrun_ms:.2f}ms | "
+            f"minor {minor_late} major {major_late}"
+        )
+        self.canvas.itemconfig(self._perf_hud_id, text=summary)
 
     def CreateFrameCanvas(self) -> "MockRGBMatrix":
         return self

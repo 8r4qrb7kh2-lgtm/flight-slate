@@ -231,6 +231,42 @@ def build_pages(state: AppState) -> list[Panel]:
     return [_build_font_demo_page(), _build_layout_demo_page(), _build_marquee_demo_page(state)]
 
 
+def _publish_perf_stats(
+    app: App,
+    *,
+    target_hz: float,
+    actual_hz: float,
+    misses: int,
+    frames: int,
+    avg_overrun_ms: float,
+    max_overrun_ms: float,
+    minor_late: int,
+    major_late: int,
+) -> None:
+    setter = getattr(app.matrix, "SetPerformanceStats", None)
+    if callable(setter):
+        setter(
+            target_hz=target_hz,
+            actual_hz=actual_hz,
+            misses=misses,
+            frames=frames,
+            avg_overrun_ms=avg_overrun_ms,
+            max_overrun_ms=max_overrun_ms,
+            minor_late=minor_late,
+            major_late=major_late,
+        )
+        return
+
+    root = getattr(app.matrix, "root", None)
+    if root is not None:
+        root.title(
+            "Mock RGB Matrix "
+            f"{actual_hz:.1f}/{target_hz:.1f}Hz "
+            f"miss {misses}/{frames} "
+            f"avg {avg_overrun_ms:.2f}ms max {max_overrun_ms:.2f}ms"
+        )
+
+
 def main() -> int:
     try:
         with _HighResWindowsTimer():
@@ -243,6 +279,9 @@ def main() -> int:
             frames_in_window = 0
             misses_in_window = 0
             max_overrun_ms = 0.0
+            overrun_sum_ms = 0.0
+            minor_late_in_window = 0
+            major_late_in_window = 0
             needs_render = True
 
             while True:
@@ -273,8 +312,14 @@ def main() -> int:
                 frames_in_window += 1
                 overrun = now - next_deadline
                 if overrun > 0:
+                    overrun_ms = overrun * 1000.0
                     misses_in_window += 1
-                    max_overrun_ms = max(max_overrun_ms, overrun * 1000.0)
+                    max_overrun_ms = max(max_overrun_ms, overrun_ms)
+                    overrun_sum_ms += overrun_ms
+                    if overrun_ms <= 0.5:
+                        minor_late_in_window += 1
+                    elif overrun_ms >= 2.0:
+                        major_late_in_window += 1
                     # Reset phase if we missed by more than one frame period.
                     if overrun > frame_delay:
                         next_deadline = now + frame_delay
@@ -287,19 +332,39 @@ def main() -> int:
                 now = time.perf_counter()
                 window_elapsed = now - stats_window_start
                 if window_elapsed >= MISS_LOG_INTERVAL_S:
+                    actual_hz = frames_in_window / max(1e-9, window_elapsed)
+                    avg_overrun_ms = (
+                        overrun_sum_ms / misses_in_window if misses_in_window > 0 else 0.0
+                    )
+                    _publish_perf_stats(
+                        app,
+                        target_hz=float(app.options.limit_refresh_rate_hz),
+                        actual_hz=actual_hz,
+                        misses=misses_in_window,
+                        frames=frames_in_window,
+                        avg_overrun_ms=avg_overrun_ms,
+                        max_overrun_ms=max_overrun_ms,
+                        minor_late=minor_late_in_window,
+                        major_late=major_late_in_window,
+                    )
                     if misses_in_window > 0:
-                        actual_hz = frames_in_window / max(1e-9, window_elapsed)
                         print(
                             "[timing] "
                             f"target={app.options.limit_refresh_rate_hz}Hz "
                             f"actual={actual_hz:.1f}Hz "
                             f"misses={misses_in_window}/{frames_in_window} "
-                            f"max_overrun={max_overrun_ms:.2f}ms"
+                            f"avg_overrun={avg_overrun_ms:.2f}ms "
+                            f"max_overrun={max_overrun_ms:.2f}ms "
+                            f"minor={minor_late_in_window} "
+                            f"major={major_late_in_window}"
                         )
                     stats_window_start = now
                     frames_in_window = 0
                     misses_in_window = 0
                     max_overrun_ms = 0.0
+                    overrun_sum_ms = 0.0
+                    minor_late_in_window = 0
+                    major_late_in_window = 0
 
             if not app.matrix.closed:
                 app.matrix.close()

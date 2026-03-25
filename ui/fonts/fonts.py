@@ -18,6 +18,6 @@ def _load_font(filename: str):
     )
 
 
-FONT_3X5 = _load_font("3x5 Font.c")
-FONT_4X6 = _load_font("4x6 Font.c")
-FONT_5X7 = _load_font("5x7 Font.c")
+FONT_3X5 = _load_font("font_3x5.c")
+FONT_4X6 = _load_font("font_4x6.c")
+FONT_5X7 = _load_font("font_5x7.c")
