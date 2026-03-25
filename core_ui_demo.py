@@ -1,21 +1,29 @@
 #!/usr/bin/env python3
-"""Core UI demo launcher with Font Demo and Column/Row Demo pages."""
+"""Core UI demo launcher with Font, Layout, and Marquee pages."""
 
 from __future__ import annotations
 
 import sys
+import time
 from dataclasses import dataclass
 
-from ui import App, Column, FONT_5X7, FONT_3X5, FONT_4X6, Panel, Row, Text, colors
+from standard_led_matrix_interface import RGBMatrixOptions
+from ui import App, Column, FONT_5X7, FONT_3X5, FONT_4X6, Marquee, Panel, Row, Text, colors
 from ui.fonts.import_util import ALNUM_PUNCT_94
 
 
 @dataclass
 class AppState:
     page_index: int = 0
+    marquee_x: float = 0.0
+    marquee_y: float = 0.0
 
 
-DEMO_PAGES = ["font-demo", "layout-demo"]
+DEMO_PAGES = ["font-demo", "layout-demo", "marquee-demo"]
+MARQUEE_X_PIXELS_PER_SECOND = 12
+MARQUEE_Y_PIXELS_PER_SECOND = 10
+TARGET_REFRESH_HZ = 120
+MISS_LOG_INTERVAL_S = 1.0
 
 
 def clamp_page(index: int) -> int:
@@ -55,9 +63,8 @@ def _build_font_demo_page() -> Panel:
                     overflow="wrap",
                     text=f"{ALNUM_PUNCT_94}",
                 ),
-            ]
-        )
-
+            ],
+        ),
     )
 
 
@@ -118,18 +125,88 @@ def _build_layout_demo_page() -> Panel:
     )
 
 
-def build_pages() -> list[Panel]:
-    return [_build_font_demo_page(), _build_layout_demo_page()]
+def _build_marquee_demo_page(state: AppState) -> Panel:
+    horizontal_banner = Text(
+        align="left",
+        font=FONT_4X6,
+        overflow="overflow",
+        overflow_axis="x",
+        overflow_offset=state.marquee_x,
+        overflow_gap=4,
+        text="  ARRIVALS: SEA 08:40  LAX 09:05  SFO 09:20  JFK 10:10  ",
+    )
+    vertical_feed = Text(
+        align="left",
+        font=FONT_3X5,
+        overflow="overflow",
+        overflow_axis="y",
+        overflow_offset=state.marquee_y,
+        overflow_gap=2,
+        text="GATE A1 OPEN  GATE A3 BOARDING  GATE B4 DELAYED  GATE C2 NOW BOARDING  ",
+    )
+    generic_content = Marquee(
+        axis="x",
+        offset=state.marquee_x,
+        content_extent=34,
+        gap=2,
+        child=Panel(
+            padding=1,
+            border=colors.WHITE,
+            bg=colors.BLUE,
+            child=Text(
+                align="center",
+                font=FONT_3X5,
+                overflow="clip",
+                text="GENERIC TILE",
+                color=colors.WHITE,
+            ),
+        ),
+    )
+    return Panel(
+        padding=1,
+        bg=colors.BLACK,
+        border=colors.WHITE,
+        child=Column(
+            gap=1,
+            sizes=[8, 10, 20, 22],
+            children=[
+                Text(
+                    align="center",
+                    font=FONT_5X7,
+                    overflow="clip",
+                    text="MARQUEE",
+                ),
+                horizontal_banner,
+                Panel(
+                    padding=1,
+                    bg=colors.BLACK,
+                    border=colors.CYAN,
+                    child=vertical_feed,
+                ),
+                generic_content,
+            ],
+        ),
+    )
+
+
+def build_pages(state: AppState) -> list[Panel]:
+    return [_build_font_demo_page(), _build_layout_demo_page(), _build_marquee_demo_page(state)]
 
 
 def main() -> int:
     try:
-        app = App()
+        app = App(options=RGBMatrixOptions(limit_refresh_rate_hz=TARGET_REFRESH_HZ))
         state = AppState()
-        pages = build_pages()
+        start = time.monotonic()
+        frame_delay = 1.0 / max(1, app.options.limit_refresh_rate_hz)
+        stats_window_start = start
+        frames_in_window = 0
+        misses_in_window = 0
+        max_overrun_ms = 0.0
         needs_render = True
 
         while True:
+            frame_start = time.monotonic()
             event = app.poll_input()
             if event == "left":
                 state.page_index = clamp_page(state.page_index - 1)
@@ -140,9 +217,44 @@ def main() -> int:
             elif event == "quit":
                 break
 
+            elapsed_s = frame_start - start
+            state.marquee_x = elapsed_s * MARQUEE_X_PIXELS_PER_SECOND
+            state.marquee_y = elapsed_s * MARQUEE_Y_PIXELS_PER_SECOND
+
+            if state.page_index == 2:
+                needs_render = True
+
             if needs_render:
+                pages = build_pages(state)
                 app.Render(pages[state.page_index])
                 needs_render = False
+
+            frame_elapsed = time.monotonic() - frame_start
+            frames_in_window += 1
+            sleep_time = frame_delay - frame_elapsed
+            if sleep_time <= 0:
+                misses_in_window += 1
+                max_overrun_ms = max(max_overrun_ms, (-sleep_time) * 1000.0)
+
+            now = time.monotonic()
+            window_elapsed = now - stats_window_start
+            if window_elapsed >= MISS_LOG_INTERVAL_S:
+                if misses_in_window > 0:
+                    actual_hz = frames_in_window / max(1e-9, window_elapsed)
+                    print(
+                        "[timing] "
+                        f"target={app.options.limit_refresh_rate_hz}Hz "
+                        f"actual={actual_hz:.1f}Hz "
+                        f"misses={misses_in_window}/{frames_in_window} "
+                        f"max_overrun={max_overrun_ms:.2f}ms"
+                    )
+                stats_window_start = now
+                frames_in_window = 0
+                misses_in_window = 0
+                max_overrun_ms = 0.0
+
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
         if not app.matrix.closed:
             app.matrix.close()

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import sys
 import tkinter as tk
-from functools import lru_cache
+
+from PIL import Image, ImageTk
 
 from standard_led_matrix_interface import RGBMatrixOptions
 
@@ -12,17 +13,11 @@ from standard_led_matrix_interface import RGBMatrixOptions
 class MockRGBMatrix:
     """A small subset of the rpi-rgb-led-matrix API for desktop development."""
 
-    LED_DIAMETER = 6
-    LED_GAP = 6
+    LED_DIAMETER = 4
+    LED_GAP = 4
     LED_PITCH = LED_DIAMETER + LED_GAP
-    GLOW_SPREAD = 2
-    LED_RENDER_RADIUS = LED_DIAMETER / 2 + 0.5
-    GLOW_RENDER_RADIUS = LED_RENDER_RADIUS + GLOW_SPREAD
     BORDER = 12
     BACKGROUND = "#000000"
-    OFF_COLOR = "#080808"
-    OUTLINE_COLOR = "#3a3a3a"
-    GLOW_MIN_INTENSITY = 0
 
     def __init__(self, options: RGBMatrixOptions | None = None) -> None:
         self.options = options or RGBMatrixOptions()
@@ -42,16 +37,18 @@ class MockRGBMatrix:
                 f"got {self.width}x{self.height}."
             )
 
-        self._frame_delay_ms = max(
-            1, int(round(1000 / max(1, self.options.limit_refresh_rate_hz)))
-        )
         self._brightness = max(0, min(100, int(self.options.brightness)))
-        self._glow_ids: list[int] = []
-        self._pixel_ids: list[int] = []
         self._framebuffer = bytearray(self.width * self.height * 3)
         self._dirty_pixels: set[int] = set()
         self._lit_pixels: set[int] = set()
+        self._frame_dirty = False
+        self._tk_image: ImageTk.PhotoImage | None = None
+        self._panel_image_id: int | None = None
         self._closed = False
+        self._channel_lut = [int((value * self._brightness) / 100) for value in range(256)]
+        self._resample_nearest = (
+            Image.Resampling.NEAREST if hasattr(Image, "Resampling") else Image.NEAREST
+        )
 
         self.root = tk.Tk()
         self.root.title("Mock RGB Matrix 128x64")
@@ -60,8 +57,10 @@ class MockRGBMatrix:
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.root.bind("<Escape>", lambda _event: self.close())
 
-        canvas_width = self.BORDER * 2 + (self.width - 1) * self.LED_PITCH + self.LED_DIAMETER
-        canvas_height = self.BORDER * 2 + (self.height - 1) * self.LED_PITCH + self.LED_DIAMETER
+        self._panel_width = self.width * self.LED_PITCH
+        self._panel_height = self.height * self.LED_PITCH
+        canvas_width = self.BORDER * 2 + self._panel_width
+        canvas_height = self.BORDER * 2 + self._panel_height
         self.canvas = tk.Canvas(
             self.root,
             width=canvas_width,
@@ -71,9 +70,15 @@ class MockRGBMatrix:
         )
         self.canvas.pack()
 
-        self._build_panel()
-        self.root.after(0, self._render)
+        self._panel_background = Image.new("RGB", (self._panel_width, self._panel_height), (0, 0, 0))
+        self._led_area_mask = self._build_led_area_mask()
 
+        self._panel_image_id = self.canvas.create_image(
+            self.BORDER,
+            self.BORDER,
+            anchor="nw",
+            image="",
+        )
     def SetPixel(self, x: int, y: int, r: int, g: int, b: int) -> None:
         if self._closed or not (0 <= x < self.width and 0 <= y < self.height):
             return
@@ -95,6 +100,7 @@ class MockRGBMatrix:
         self._framebuffer[base + 1] = g
         self._framebuffer[base + 2] = b
         self._dirty_pixels.add(index)
+        self._frame_dirty = True
 
         if r or g or b:
             self._lit_pixels.add(index)
@@ -114,6 +120,21 @@ class MockRGBMatrix:
 
         self._dirty_pixels.update(cleared)
         self._lit_pixels.clear()
+        self._frame_dirty = True
+
+    def SetPixelsFromBytes(self, frame_bytes: bytes) -> None:
+        if self._closed:
+            return
+        if len(frame_bytes) != len(self._framebuffer):
+            raise ValueError(
+                f"frame_bytes must contain {len(self._framebuffer)} bytes; got {len(frame_bytes)}"
+            )
+        if frame_bytes == self._framebuffer:
+            return
+
+        self._framebuffer[:] = frame_bytes
+        self._dirty_pixels.clear()
+        self._frame_dirty = True
 
     def CreateFrameCanvas(self) -> "MockRGBMatrix":
         return self
@@ -125,6 +146,7 @@ class MockRGBMatrix:
         if self._closed:
             return False
 
+        self._blit_frame_if_needed()
         self.root.update_idletasks()
         self.root.update()
         return not self._closed
@@ -147,96 +169,55 @@ class MockRGBMatrix:
         except tk.TclError:
             pass
 
-    def _build_panel(self) -> None:
-        for y in range(self.height):
-            center_y = self.BORDER + y * self.LED_PITCH + self.LED_DIAMETER / 2
-            for x in range(self.width):
-                center_x = self.BORDER + x * self.LED_PITCH + self.LED_DIAMETER / 2
-                glow_id = self.canvas.create_oval(
-                    center_x - self.GLOW_RENDER_RADIUS,
-                    center_y - self.GLOW_RENDER_RADIUS,
-                    center_x + self.GLOW_RENDER_RADIUS,
-                    center_y + self.GLOW_RENDER_RADIUS,
-                    fill=self.BACKGROUND,
-                    outline="",
-                )
-                pixel_id = self.canvas.create_oval(
-                    center_x - self.LED_RENDER_RADIUS,
-                    center_y - self.LED_RENDER_RADIUS,
-                    center_x + self.LED_RENDER_RADIUS,
-                    center_y + self.LED_RENDER_RADIUS,
-                    fill=self.OFF_COLOR,
-                    outline=self.OUTLINE_COLOR,
-                    width=1,
-                )
-                self._glow_ids.append(glow_id)
-                self._pixel_ids.append(pixel_id)
-
-    def _render(self) -> None:
-        if self._closed:
-            return
-
-        if self._dirty_pixels:
-            dirty = tuple(self._dirty_pixels)
+    def _blit_frame_if_needed(self) -> None:
+        if self._frame_dirty:
             self._dirty_pixels.clear()
-            for index in dirty:
-                base = index * 3
-                color = scale_rgb_to_hex(
-                    self._framebuffer[base],
-                    self._framebuffer[base + 1],
-                    self._framebuffer[base + 2],
-                    self._brightness,
-                )
-                led_is_lit = color != self.OFF_COLOR
-                outline = "" if led_is_lit else self.OUTLINE_COLOR
-                outline_width = 0 if led_is_lit else 1
-                self.canvas.itemconfig(self._glow_ids[index], fill=self.BACKGROUND)
-                self.canvas.itemconfig(
-                    self._pixel_ids[index],
-                    fill=color,
-                    outline=outline,
-                    width=outline_width,
-                )
+            self._frame_dirty = False
 
-        self.root.after(self._frame_delay_ms, self._render)
+            source = Image.frombuffer(
+                "RGB",
+                (self.width, self.height),
+                self._framebuffer,
+                "raw",
+                "RGB",
+                0,
+                1,
+            )
+            if self._brightness < 100:
+                source = source.point(self._channel_lut * 3)
+
+            display = source.resize(
+                (self._panel_width, self._panel_height),
+                self._resample_nearest,
+            )
+
+            # Re-apply LED spacing so the mock still resembles discrete diodes.
+            if self.LED_GAP > 0:
+                display = Image.composite(display, self._panel_background, self._led_area_mask)
+
+            if self._tk_image is None:
+                self._tk_image = ImageTk.PhotoImage(display)
+            else:
+                self._tk_image.paste(display)
+            if self._panel_image_id is not None:
+                self.canvas.itemconfig(self._panel_image_id, image=self._tk_image)
 
     @staticmethod
     def _clamp_channel(value: int) -> int:
         return max(0, min(255, int(value)))
 
-
-@lru_cache(maxsize=4096)
-def scale_rgb_to_hex(r: int, g: int, b: int, brightness: int) -> str:
-    if not (r or g or b):
-        return MockRGBMatrix.OFF_COLOR
-
-    factor = brightness / 100.0
-    return "#{:02x}{:02x}{:02x}".format(
-        int(r * factor),
-        int(g * factor),
-        int(b * factor),
-    )
-
-
-@lru_cache(maxsize=4096)
-def glow_rgb_to_hex(r: int, g: int, b: int, brightness: int) -> str:
-    if not (r or g or b):
-        return MockRGBMatrix.BACKGROUND
-
-    factor = brightness / 100.0
-    return "#{:02x}{:02x}{:02x}".format(
-        glow_channel(r, factor),
-        glow_channel(g, factor),
-        glow_channel(b, factor),
-    )
-
-
-def glow_channel(value: int, factor: float) -> int:
-    led_scaled = int(value * factor)
-    scaled = int(value * factor * 1.35)
-    # Keep glow clearly secondary to the LED core while still using stronger scaling.
-    capped = min(scaled, int(led_scaled * 0.55))
-    return max(MockRGBMatrix.GLOW_MIN_INTENSITY, min(255, capped))
+    def _build_led_area_mask(self) -> Image.Image:
+        mask = Image.new("L", (self._panel_width, self._panel_height), 0)
+        pixels = mask.load()
+        for y in range(self.height):
+            top = y * self.LED_PITCH
+            for x in range(self.width):
+                left = x * self.LED_PITCH
+                for dy in range(self.LED_DIAMETER):
+                    row = top + dy
+                    for dx in range(self.LED_DIAMETER):
+                        pixels[left + dx, row] = 255
+        return mask
 
 
 RGBMatrix = MockRGBMatrix

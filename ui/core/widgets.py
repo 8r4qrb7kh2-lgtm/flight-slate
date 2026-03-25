@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import floor
 
 from ui.core.bitmap_font import BitmapFont
 from ui.core.canvas import PixelCanvas, Rect
@@ -20,6 +21,9 @@ class Text(Widget):
     font: BitmapFont
     align: str = "left"
     overflow: str = "clip"
+    overflow_axis: str = "x"
+    overflow_offset: float = 0.0
+    overflow_gap: int | None = None
     color: Color = colors.WHITE
     line_spacing: int | None = None
 
@@ -27,23 +31,64 @@ class Text(Widget):
         if rect.width <= 0 or rect.height <= 0:
             return
 
+        if self.overflow == "overflow":
+            self._draw_overflow(canvas, rect)
+            return
+
         line_height = self.font.height
         line_spacing = self.font.spacing * 2 if self.line_spacing is None else max(0, self.line_spacing)
         lines = self._resolve_lines(rect.width)
         draw_y = rect.y
 
-        for line in lines:
-            if draw_y + line_height > rect.bottom:
-                break
-            line_width, _ = self.font.measure(line)
-            if self.align == "center":
-                draw_x = rect.x + max(0, (rect.width - line_width) // 2)
-            elif self.align == "right":
-                draw_x = rect.x + max(0, rect.width - line_width)
-            else:
-                draw_x = rect.x
-            self.font.render(canvas, draw_x, draw_y, line, self.color)
-            draw_y += line_height + line_spacing
+        with canvas.clip(rect):
+            for line in lines:
+                if draw_y + line_height > rect.bottom:
+                    break
+                line_width, _ = self.font.measure(line)
+                if self.align == "center":
+                    draw_x = rect.x + max(0, (rect.width - line_width) // 2)
+                elif self.align == "right":
+                    draw_x = rect.x + max(0, rect.width - line_width)
+                else:
+                    draw_x = rect.x
+                self.font.render(canvas, draw_x, draw_y, line, self.color)
+                draw_y += line_height + line_spacing
+
+    def _draw_overflow(self, canvas: PixelCanvas, rect: Rect) -> None:
+        axis = "y" if self.overflow_axis == "y" else "x"
+        gap = self.font.spacing * 4 if self.overflow_gap is None else max(0, self.overflow_gap)
+
+        if axis == "x":
+            content_extent = self.font.measure(self.text)[0]
+            child = Text(
+                text=self.text,
+                font=self.font,
+                align="left",
+                overflow="clip",
+                color=self.color,
+                line_spacing=self.line_spacing,
+            )
+        else:
+            line_spacing = self.font.spacing * 2 if self.line_spacing is None else max(0, self.line_spacing)
+            lines = _wrap_text(self.font, self.text, rect.width)
+            line_count = max(1, len(lines))
+            content_extent = (line_count * self.font.height) + ((line_count - 1) * line_spacing)
+            child = Text(
+                text=self.text,
+                font=self.font,
+                align=self.align,
+                overflow="wrap",
+                color=self.color,
+                line_spacing=self.line_spacing,
+            )
+
+        Marquee(
+            child=child,
+            axis=axis,
+            offset=self.overflow_offset,
+            content_extent=content_extent,
+            gap=gap,
+        ).draw(canvas, rect)
 
     def _resolve_lines(self, width: int) -> list[str]:
         if self.overflow == "wrap":
@@ -71,6 +116,61 @@ class Panel(Widget):
             return
 
         self.child.draw(canvas, Rect(inner_x, inner_y, inner_width, inner_height))
+
+
+@dataclass
+class Marquee(Widget):
+    child: Widget
+    axis: str = "x"
+    offset: float = 0.0
+    content_extent: int | None = None
+    gap: int = 0
+
+    def draw(self, canvas: PixelCanvas, rect: Rect) -> None:
+        if rect.width <= 0 or rect.height <= 0 or self.child is None:
+            return
+
+        axis = "y" if self.axis == "y" else "x"
+        axis_total = rect.height if axis == "y" else rect.width
+        if axis_total <= 0:
+            return
+
+        gap = max(0, self.gap)
+        content_extent = self.content_extent
+        if content_extent is None:
+            content_extent = _estimate_axis_extent(self.child, rect, axis)
+        if content_extent is None or content_extent <= 0:
+            self.child.draw(canvas, rect)
+            return
+
+        step = content_extent + gap
+        if step <= 0:
+            self.child.draw(canvas, rect)
+            return
+
+        integer_offset = int(floor(self.offset))
+        self._draw_integer(canvas, rect, axis, axis_total, content_extent, step, integer_offset)
+
+    def _draw_integer(
+        self,
+        canvas: PixelCanvas,
+        rect: Rect,
+        axis: str,
+        axis_total: int,
+        content_extent: int,
+        step: int,
+        offset: int,
+    ) -> None:
+        shift = offset % step
+        start = -shift
+        with canvas.clip(rect):
+            while start < axis_total:
+                if axis == "x":
+                    child_rect = Rect(rect.x + start, rect.y, content_extent, rect.height)
+                else:
+                    child_rect = Rect(rect.x, rect.y + start, rect.width, content_extent)
+                self.child.draw(canvas, child_rect)
+                start += step
 
 
 @dataclass
@@ -250,3 +350,50 @@ def _allocate_weighted_extents(total: int, sizes: list[int]) -> list[int]:
         previous_edge = edge
 
     return extents
+
+
+def _estimate_axis_extent(widget: Widget, rect: Rect, axis: str) -> int:
+    if isinstance(widget, Text):
+        if axis == "x":
+            return widget.font.measure(widget.text)[0]
+
+        line_spacing = widget.font.spacing * 2 if widget.line_spacing is None else max(0, widget.line_spacing)
+        lines = widget._resolve_lines(rect.width)
+        line_count = max(1, len(lines))
+        return (line_count * widget.font.height) + ((line_count - 1) * line_spacing)
+
+    if isinstance(widget, Panel):
+        border_inset = 1 if widget.border is not None else 0
+        inset = widget.padding + border_inset
+        inner_rect = Rect(
+            rect.x,
+            rect.y,
+            max(0, rect.width - inset * 2),
+            max(0, rect.height - inset * 2),
+        )
+        return _estimate_axis_extent(widget.child, inner_rect, axis) + (inset * 2)
+
+    if isinstance(widget, Row):
+        if axis == "y":
+            return rect.height
+        total = 0
+        for index, child in enumerate(widget.children):
+            total += _estimate_axis_extent(child, rect, axis)
+            if index != len(widget.children) - 1:
+                total += widget.gap
+        return total
+
+    if isinstance(widget, Column):
+        if axis == "x":
+            widest = 0
+            for child in widget.children:
+                widest = max(widest, _estimate_axis_extent(child, rect, axis))
+            return widest
+        total = 0
+        for index, child in enumerate(widget.children):
+            total += _estimate_axis_extent(child, rect, axis)
+            if index != len(widget.children) - 1:
+                total += widget.gap
+        return total
+
+    return rect.height if axis == "y" else rect.width

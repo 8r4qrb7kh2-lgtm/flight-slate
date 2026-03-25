@@ -25,6 +25,8 @@ class App:
         self.options = options or RGBMatrixOptions(limit_refresh_rate_hz=20)
         self.matrix = matrix or MockRGBMatrix(self.options)
         self.canvas = PixelCanvas(self.options.width, self.options.height, colors.BLACK)
+        self._last_frame_bytes = bytearray(self.options.width * self.options.height * 3)
+        self._frame_initialized = False
         self._event_queue: deque[str] = deque()
         self._held_nav_keys: set[str] = set()
         self._repeat_jobs: dict[str, str] = {}
@@ -103,7 +105,31 @@ class App:
         self._schedule_repeat(direction, self._REPEAT_INTERVAL_MS)
 
     def _push_canvas_to_matrix(self, matrix: LEDMatrix) -> None:
-        pixels = self.canvas.image.load()
-        for y in range(self.canvas.height):
-            for x in range(self.canvas.width):
-                matrix.SetPixel(x, y, *pixels[x, y])
+        frame_bytes = self.canvas.image.tobytes()
+        bulk_uploader = getattr(matrix, "SetPixelsFromBytes", None)
+        if callable(bulk_uploader):
+            bulk_uploader(frame_bytes)
+            self._last_frame_bytes[:] = frame_bytes
+            self._frame_initialized = True
+            return
+
+        width = self.canvas.width
+
+        for index in range(width * self.canvas.height):
+            base = index * 3
+            r = frame_bytes[base]
+            g = frame_bytes[base + 1]
+            b = frame_bytes[base + 2]
+            if self._frame_initialized:
+                if (
+                    self._last_frame_bytes[base] == r
+                    and self._last_frame_bytes[base + 1] == g
+                    and self._last_frame_bytes[base + 2] == b
+                ):
+                    continue
+            x = index % width
+            y = index // width
+            matrix.SetPixel(x, y, r, g, b)
+
+        self._last_frame_bytes[:] = frame_bytes
+        self._frame_initialized = True
