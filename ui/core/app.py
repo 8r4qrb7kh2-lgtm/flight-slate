@@ -105,7 +105,7 @@ class App:
         self._schedule_repeat(direction, self._REPEAT_INTERVAL_MS)
 
     def _push_canvas_to_matrix(self, matrix: LEDMatrix) -> None:
-        frame_bytes = self.canvas.image.tobytes()
+        frame_bytes = self.canvas.to_bytes()
         bulk_uploader = getattr(matrix, "SetPixelsFromBytes", None)
         if callable(bulk_uploader):
             bulk_uploader(frame_bytes)

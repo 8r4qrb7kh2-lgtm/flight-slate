@@ -147,7 +147,6 @@ class MockRGBMatrix:
             return False
 
         self._blit_frame_if_needed()
-        self.root.update_idletasks()
         self.root.update()
         return not self._closed
 
@@ -209,6 +208,9 @@ class MockRGBMatrix:
     def _build_led_area_mask(self) -> Image.Image:
         mask = Image.new("L", (self._panel_width, self._panel_height), 0)
         pixels = mask.load()
+        radius = self.LED_DIAMETER / 2.0
+        center_offset = (self.LED_DIAMETER - 1) / 2.0
+        radius_sq = radius * radius
         for y in range(self.height):
             top = y * self.LED_PITCH
             for x in range(self.width):
@@ -216,7 +218,10 @@ class MockRGBMatrix:
                 for dy in range(self.LED_DIAMETER):
                     row = top + dy
                     for dx in range(self.LED_DIAMETER):
-                        pixels[left + dx, row] = 255
+                        fx = dx - center_offset
+                        fy = dy - center_offset
+                        if (fx * fx) + (fy * fy) <= radius_sq:
+                            pixels[left + dx, row] = 255
         return mask
 
 

@@ -40,6 +40,14 @@ class BitmapFont:
         self.space_width = max(1, height // 2)
         self._fallback_glyph = self.glyphs.get("?") or next(iter(self.glyphs.values()))
         self._blank_rows = tuple("." * self.space_width for _ in range(self.height))
+        self._native_glyphs = {
+            char: (glyph.width, self._pack_rows(glyph.rows))
+            for char, glyph in self.glyphs.items()
+        }
+        self._native_fallback = (
+            self._fallback_glyph.width,
+            self._pack_rows(self._fallback_glyph.rows),
+        )
 
     def measure(self, text: str, scale: int = 1) -> tuple[int, int]:
         width = 0
@@ -51,6 +59,19 @@ class BitmapFont:
         return width, self.height * scale
 
     def render(self, canvas: PixelCanvas, x: int, y: int, text: str, color: Color, scale: int = 1) -> None:
+        if canvas.draw_text_native(
+            x=x,
+            y=y,
+            text=text,
+            color=color,
+            scale=scale,
+            spacing=self.spacing,
+            space_width=self.space_width,
+            glyph_map=self._native_glyphs,
+            fallback_glyph=self._native_fallback,
+        ):
+            return
+
         cursor_x = x
         for index, char in enumerate(text):
             glyph = self._resolve_glyph(char)
@@ -93,3 +114,13 @@ class BitmapFont:
             return Glyph(width=self.space_width, rows=self._blank_rows)
 
         return self._fallback_glyph
+
+    @staticmethod
+    def _pack_rows(rows: GlyphRows) -> tuple[int, ...]:
+        packed: list[int] = []
+        for row in rows:
+            mask = 0
+            for value in row:
+                mask = (mask << 1) | (1 if value == "#" else 0)
+            packed.append(mask)
+        return tuple(packed)

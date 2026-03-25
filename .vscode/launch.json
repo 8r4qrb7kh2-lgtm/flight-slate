@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run Core UI Demo (Build Native First)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/core_ui_demo.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "preLaunchTask": "Build Native C++ Extension"
+        }
+    ]
+}

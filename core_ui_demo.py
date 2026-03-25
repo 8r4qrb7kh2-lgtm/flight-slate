@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import sys
 import time
 from dataclasses import dataclass
@@ -24,6 +25,43 @@ MARQUEE_X_PIXELS_PER_SECOND = 12
 MARQUEE_Y_PIXELS_PER_SECOND = 10
 TARGET_REFRESH_HZ = 120
 MISS_LOG_INTERVAL_S = 1.0
+
+
+class _HighResWindowsTimer:
+    def __init__(self) -> None:
+        self._enabled = False
+
+    def __enter__(self) -> "_HighResWindowsTimer":
+        if sys.platform == "win32":
+            try:
+                winmm = ctypes.WinDLL("winmm")
+                if winmm.timeBeginPeriod(1) == 0:
+                    self._enabled = True
+            except Exception:
+                self._enabled = False
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._enabled and sys.platform == "win32":
+            try:
+                ctypes.WinDLL("winmm").timeEndPeriod(1)
+            except Exception:
+                pass
+
+
+def _sleep_until(deadline: float) -> None:
+    while True:
+        now = time.perf_counter()
+        remaining = deadline - now
+        if remaining <= 0:
+            return
+        if remaining > 0.002:
+            time.sleep(remaining - 0.001)
+        else:
+            # Finish with a short spin to avoid timer quantization misses.
+            while time.perf_counter() < deadline:
+                pass
+            return
 
 
 def clamp_page(index: int) -> int:
@@ -195,69 +233,76 @@ def build_pages(state: AppState) -> list[Panel]:
 
 def main() -> int:
     try:
-        app = App(options=RGBMatrixOptions(limit_refresh_rate_hz=TARGET_REFRESH_HZ))
-        state = AppState()
-        start = time.monotonic()
-        frame_delay = 1.0 / max(1, app.options.limit_refresh_rate_hz)
-        stats_window_start = start
-        frames_in_window = 0
-        misses_in_window = 0
-        max_overrun_ms = 0.0
-        needs_render = True
+        with _HighResWindowsTimer():
+            app = App(options=RGBMatrixOptions(limit_refresh_rate_hz=TARGET_REFRESH_HZ))
+            state = AppState()
+            start = time.perf_counter()
+            frame_delay = 1.0 / max(1, app.options.limit_refresh_rate_hz)
+            next_deadline = start + frame_delay
+            stats_window_start = start
+            frames_in_window = 0
+            misses_in_window = 0
+            max_overrun_ms = 0.0
+            needs_render = True
 
-        while True:
-            frame_start = time.monotonic()
-            event = app.poll_input()
-            if event == "left":
-                state.page_index = clamp_page(state.page_index - 1)
-                needs_render = True
-            elif event == "right":
-                state.page_index = clamp_page(state.page_index + 1)
-                needs_render = True
-            elif event == "quit":
-                break
+            while True:
+                frame_start = time.perf_counter()
+                event = app.poll_input()
+                if event == "left":
+                    state.page_index = clamp_page(state.page_index - 1)
+                    needs_render = True
+                elif event == "right":
+                    state.page_index = clamp_page(state.page_index + 1)
+                    needs_render = True
+                elif event == "quit":
+                    break
 
-            elapsed_s = frame_start - start
-            state.marquee_x = elapsed_s * MARQUEE_X_PIXELS_PER_SECOND
-            state.marquee_y = elapsed_s * MARQUEE_Y_PIXELS_PER_SECOND
+                elapsed_s = frame_start - start
+                state.marquee_x = elapsed_s * MARQUEE_X_PIXELS_PER_SECOND
+                state.marquee_y = elapsed_s * MARQUEE_Y_PIXELS_PER_SECOND
 
-            if state.page_index == 2:
-                needs_render = True
+                if state.page_index == 2:
+                    needs_render = True
 
-            if needs_render:
-                pages = build_pages(state)
-                app.Render(pages[state.page_index])
-                needs_render = False
+                if needs_render:
+                    pages = build_pages(state)
+                    app.Render(pages[state.page_index])
+                    needs_render = False
 
-            frame_elapsed = time.monotonic() - frame_start
-            frames_in_window += 1
-            sleep_time = frame_delay - frame_elapsed
-            if sleep_time <= 0:
-                misses_in_window += 1
-                max_overrun_ms = max(max_overrun_ms, (-sleep_time) * 1000.0)
+                now = time.perf_counter()
+                frames_in_window += 1
+                overrun = now - next_deadline
+                if overrun > 0:
+                    misses_in_window += 1
+                    max_overrun_ms = max(max_overrun_ms, overrun * 1000.0)
+                    # Reset phase if we missed by more than one frame period.
+                    if overrun > frame_delay:
+                        next_deadline = now + frame_delay
+                    else:
+                        next_deadline += frame_delay
+                else:
+                    _sleep_until(next_deadline)
+                    next_deadline += frame_delay
 
-            now = time.monotonic()
-            window_elapsed = now - stats_window_start
-            if window_elapsed >= MISS_LOG_INTERVAL_S:
-                if misses_in_window > 0:
-                    actual_hz = frames_in_window / max(1e-9, window_elapsed)
-                    print(
-                        "[timing] "
-                        f"target={app.options.limit_refresh_rate_hz}Hz "
-                        f"actual={actual_hz:.1f}Hz "
-                        f"misses={misses_in_window}/{frames_in_window} "
-                        f"max_overrun={max_overrun_ms:.2f}ms"
-                    )
-                stats_window_start = now
-                frames_in_window = 0
-                misses_in_window = 0
-                max_overrun_ms = 0.0
+                now = time.perf_counter()
+                window_elapsed = now - stats_window_start
+                if window_elapsed >= MISS_LOG_INTERVAL_S:
+                    if misses_in_window > 0:
+                        actual_hz = frames_in_window / max(1e-9, window_elapsed)
+                        print(
+                            "[timing] "
+                            f"target={app.options.limit_refresh_rate_hz}Hz "
+                            f"actual={actual_hz:.1f}Hz "
+                            f"misses={misses_in_window}/{frames_in_window} "
+                            f"max_overrun={max_overrun_ms:.2f}ms"
+                        )
+                    stats_window_start = now
+                    frames_in_window = 0
+                    misses_in_window = 0
+                    max_overrun_ms = 0.0
 
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-
-        if not app.matrix.closed:
-            app.matrix.close()
+            if not app.matrix.closed:
+                app.matrix.close()
     except RuntimeError as exc:
         print(exc, file=sys.stderr)
         return 1
