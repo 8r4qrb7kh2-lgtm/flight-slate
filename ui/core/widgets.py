@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import floor
+from math import cos, floor, sin, tau
+from typing import Any
 
 from ui.core.bitmap_font import BitmapFont
 from ui.core.canvas import PixelCanvas, Rect
 from ui.core.colors import Color, colors
+from ui.core.image_asset import ImageFrame
 
 
 class Widget:
@@ -116,6 +118,63 @@ class Panel(Widget):
             return
 
         self.child.draw(canvas, Rect(inner_x, inner_y, inner_width, inner_height))
+
+
+@dataclass
+class Image(Widget):
+    frame: ImageFrame | None
+    fit: str = "contain"
+    bg: Color | None = None
+
+    def draw(self, canvas: PixelCanvas, rect: Rect) -> None:
+        if rect.width <= 0 or rect.height <= 0:
+            return
+
+        if self.bg is not None:
+            canvas.rect(rect, fill=self.bg)
+
+        if self.frame is None:
+            return
+
+        src_w = self.frame.width
+        src_h = self.frame.height
+        if src_w <= 0 or src_h <= 0:
+            return
+
+        mode = self.fit.lower().strip()
+        if mode == "stretch":
+            draw_w = rect.width
+            draw_h = rect.height
+        elif mode in {"none", "original", "native"}:
+            draw_w = src_w
+            draw_h = src_h
+        else:
+            scale = min(rect.width / src_w, rect.height / src_h)
+            if scale <= 0:
+                return
+            draw_w = max(1, int(src_w * scale))
+            draw_h = max(1, int(src_h * scale))
+
+        origin_x = rect.x + max(0, (rect.width - draw_w) // 2)
+        origin_y = rect.y + max(0, (rect.height - draw_h) // 2)
+
+        with canvas.clip(rect):
+            for dy in range(draw_h):
+                src_y = (dy * src_h) // draw_h
+                for dx in range(draw_w):
+                    src_x = (dx * src_w) // draw_w
+                    argb = self.frame.argb_pixels[(src_y * src_w) + src_x]
+                    alpha = (argb >> 24) & 0xFF
+                    if alpha == 0:
+                        continue
+
+                    color = ((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF)
+                    dst_x = origin_x + dx
+                    dst_y = origin_y + dy
+                    if alpha >= 255:
+                        canvas.pixel(dst_x, dst_y, color)
+                    else:
+                        canvas.blend_pixel(dst_x, dst_y, color, alpha / 255.0)
 
 
 @dataclass
@@ -397,3 +456,830 @@ def _estimate_axis_extent(widget: Widget, rect: Rect, axis: str) -> int:
         return total
 
     return rect.height if axis == "y" else rect.width
+
+
+@dataclass
+class LoadingSpinner(Widget):
+    phase: float = 0.0
+    color: Color = colors.WHITE
+    radius: int = 9
+    spokes: int = 12
+
+    def draw(self, canvas: PixelCanvas, rect: Rect) -> None:
+        if rect.width <= 0 or rect.height <= 0:
+            return
+
+        cx = rect.x + (rect.width / 2.0)
+        cy = rect.y + (rect.height / 2.0)
+        spoke_count = max(6, self.spokes)
+        radius = max(3, self.radius)
+
+        with canvas.clip(rect):
+            for index in range(spoke_count):
+                # Create a soft trailing fade that rotates with phase.
+                rel = (index - self.phase) % spoke_count
+                alpha = max(0.2, 1.0 - (rel / spoke_count))
+                angle = ((index / spoke_count) * tau) - (tau / 4.0)
+                x = int(round(cx + (cos(angle) * radius)))
+                y = int(round(cy + (sin(angle) * radius)))
+                canvas.blend_pixel(x, y, self.color, alpha)
+                # Star-like glow around each spoke endpoint.
+                canvas.blend_pixel(x + 1, y, self.color, alpha * 0.65)
+                canvas.blend_pixel(x - 1, y, self.color, alpha * 0.65)
+                canvas.blend_pixel(x, y + 1, self.color, alpha * 0.65)
+                canvas.blend_pixel(x, y - 1, self.color, alpha * 0.65)
+                canvas.blend_pixel(x + 1, y + 1, self.color, alpha * 0.35)
+                canvas.blend_pixel(x - 1, y + 1, self.color, alpha * 0.35)
+                canvas.blend_pixel(x + 1, y - 1, self.color, alpha * 0.35)
+                canvas.blend_pixel(x - 1, y - 1, self.color, alpha * 0.35)
+            # Bright center glint for stronger "loading" focus.
+            canvas.blend_pixel(int(round(cx)), int(round(cy)), self.color, 1.0)
+
+
+@dataclass
+class Map(Widget):
+    center_lat: float
+    center_lon: float
+    zoom: int
+    tile_data: dict[str, Any] | None = None
+    loading: bool = False
+    bg: Color = (18, 18, 20)
+    # Base land is a dim green so overlays remain readable.
+    land_color: Color = (16, 52, 16)
+    water_color: Color = (20, 95, 210)
+    # Parks are clearly brighter than regular land.
+    park_color: Color = (32, 108, 32)
+    building_color: Color = (120, 124, 120)
+    border_color: Color = colors.WHITE
+    road_color: Color = (150, 150, 150)
+    spinner_phase: float = 0.0
+
+    def draw(self, canvas: PixelCanvas, rect: Rect) -> None:
+        if rect.width <= 0 or rect.height <= 0:
+            return
+
+        canvas.rect(rect, fill=self.bg, outline=None)
+        content = Rect(rect.x + 1, rect.y + 1, max(0, rect.width - 2), max(0, rect.height - 2))
+        if content.width <= 0 or content.height <= 0:
+            return
+
+        canvas.rect(content, fill=self.land_color, outline=None)
+
+        if self.tile_data is not None:
+            # Keep all map vectors constrained to the content rect.
+            with canvas.clip(content):
+                if isinstance(self.tile_data, dict) and "tiles" in self.tile_data:
+                    _draw_map_view(
+                        canvas=canvas,
+                        rect=content,
+                        zoom=self.zoom,
+                        tile_bundle=self.tile_data,
+                        water_color=self.water_color,
+                        park_color=self.park_color,
+                        building_color=self.building_color,
+                        border_color=self.border_color,
+                        road_color=self.road_color,
+                    )
+                else:
+                    _draw_map_tile(
+                        canvas=canvas,
+                        rect=content,
+                        zoom=self.zoom,
+                        tile_data=self.tile_data,
+                        water_color=self.water_color,
+                        park_color=self.park_color,
+                        building_color=self.building_color,
+                        border_color=self.border_color,
+                        road_color=self.road_color,
+                    )
+
+        if self.loading:
+            with canvas.clip(content):
+                for y in range(content.y, content.bottom):
+                    for x in range(content.x, content.right):
+                        canvas.blend_pixel(x, y, colors.BLACK, 0.55)
+            spinner_size = min(content.width, content.height)
+            LoadingSpinner(
+                phase=self.spinner_phase,
+                color=colors.WHITE,
+                radius=max(4, spinner_size // 6),
+                spokes=12,
+            ).draw(canvas, content)
+
+
+_MAP_MAJOR_ROAD_CLASSES = {"motorway", "trunk", "primary", "secondary"}
+_MAP_PARK_CLASSES = {"park", "national_park", "nature_reserve", "recreation_ground", "grass"}
+_MAP_URBAN_CLASSES = {"building", "residential", "commercial", "industrial", "retail"}
+
+
+def _admin_rank(props: dict[str, Any]) -> int:
+    admin_level_raw = props.get("admin_level")
+    try:
+        return int(str(admin_level_raw))
+    except Exception:
+        pass
+
+    cls = str(props.get("class") or props.get("type") or "").lower()
+    if cls in {"country", "disputed", "international", "national"}:
+        return 2
+    if cls in {"state", "province", "region"}:
+        return 4
+    if cls in {"county", "district"}:
+        return 6
+    if cls in {"city", "municipality", "locality"}:
+        return 8
+    return 99
+
+
+def _should_draw_admin(props: dict[str, Any], zoom: int) -> bool:
+    # Keep only broad borders at continent/country views.
+    rank = _admin_rank(props)
+    if zoom <= 2:
+        return rank <= 2
+    if zoom <= 3:
+        return rank <= 4
+    if zoom <= 5:
+        return rank <= 5
+    if zoom <= 7:
+        return rank <= 6
+    if zoom <= 8:
+        return rank <= 7
+    return True
+
+
+def _allowed_road_classes(zoom: int) -> set[str]:
+    # Avoid gray-road washout at low zoom by showing only the most important roads.
+    if zoom <= 3:
+        return set()
+    if zoom <= 5:
+        return {"motorway"}
+    if zoom <= 7:
+        return {"motorway", "trunk"}
+    if zoom <= 9:
+        return {"motorway", "trunk", "primary"}
+    if zoom <= 12:
+        return {"motorway", "trunk", "primary"}
+    if zoom <= 14:
+        return {"motorway", "trunk", "primary", "secondary"}
+    return {"motorway", "trunk", "primary", "secondary", "tertiary"}
+
+
+def _road_density_mod(zoom: int) -> int:
+    # Additional decimation to reduce visual clutter without random flicker.
+    if zoom <= 5:
+        return 99
+    if zoom <= 7:
+        return 6
+    if zoom <= 9:
+        return 4
+    if zoom <= 12:
+        return 3
+    if zoom <= 14:
+        return 2
+    return 1
+
+
+def _road_bucket(props: dict[str, Any]) -> int:
+    token = str(props.get("id") or props.get("osm_id") or props.get("name") or props.get("ref") or "")
+    h = 0
+    for ch in token:
+        h = ((h * 131) + ord(ch)) & 0xFFFFFFFF
+    return h
+
+
+def _draw_map_tile(
+    *,
+    canvas: PixelCanvas,
+    rect: Rect,
+    zoom: int,
+    tile_data: dict[str, Any],
+    water_color: Color,
+    park_color: Color,
+    building_color: Color,
+    border_color: Color,
+    road_color: Color,
+) -> None:
+    for layer_name in ("water", "waterway"):
+        layer = tile_data.get(layer_name)
+        if not layer:
+            continue
+        extent = int(layer.get("extent", 4096))
+        for feature in layer.get("features", []):
+            _draw_feature_geometry(canvas, rect, extent, feature.get("geometry", {}), water_color, 1)
+
+    for layer_name in ("landuse", "landcover"):
+        layer = tile_data.get(layer_name)
+        if not layer:
+            continue
+        extent = int(layer.get("extent", 4096))
+        for feature in layer.get("features", []):
+            props = feature.get("properties", {})
+            if props.get("class") not in _MAP_PARK_CLASSES:
+                continue
+            geometry = feature.get("geometry", {})
+            geom_type = geometry.get("type")
+            coords = geometry.get("coordinates", [])
+            if geom_type == "Polygon":
+                _draw_polygon_geometry(canvas, rect, [coords], extent, park_color)
+            elif geom_type == "MultiPolygon":
+                _draw_polygon_geometry(canvas, rect, coords, extent, park_color)
+
+    for layer_name in ("building", "building_part", "landuse_overlay", "landuse"):
+        layer = tile_data.get(layer_name)
+        if not layer:
+            continue
+        extent = int(layer.get("extent", 4096))
+        for feature in layer.get("features", []):
+            props = feature.get("properties", {})
+            if layer_name in {"landuse_overlay", "landuse"}:
+                if props.get("class") not in _MAP_URBAN_CLASSES:
+                    continue
+            geometry = feature.get("geometry", {})
+            geom_type = geometry.get("type")
+            coords = geometry.get("coordinates", [])
+            if geom_type == "Polygon":
+                _draw_polygon_geometry(canvas, rect, [coords], extent, building_color)
+            elif geom_type == "MultiPolygon":
+                _draw_polygon_geometry(canvas, rect, coords, extent, building_color)
+
+    admin = tile_data.get("admin")
+    if admin:
+        extent = int(admin.get("extent", 4096))
+        for feature in admin.get("features", []):
+            props = feature.get("properties", {})
+            if not _should_draw_admin(props, zoom):
+                continue
+            _draw_feature_geometry(canvas, rect, extent, feature.get("geometry", {}), border_color, 1)
+
+    roads = tile_data.get("road")
+    if roads:
+        extent = int(roads.get("extent", 4096))
+        allowed_classes = _allowed_road_classes(zoom)
+        sample_mod = _road_density_mod(zoom)
+        for feature in roads.get("features", []):
+            props = feature.get("properties", {})
+            road_class = props.get("class")
+            if road_class not in allowed_classes:
+                continue
+            if sample_mod > 1 and (_road_bucket(props) % sample_mod) != 0:
+                continue
+            # Keep roads crisp on low-res matrix to avoid fat merged corridors.
+            width = 1
+            _draw_feature_geometry(canvas, rect, extent, feature.get("geometry", {}), road_color, width)
+
+
+def _draw_map_view(
+    *,
+    canvas: PixelCanvas,
+    rect: Rect,
+    zoom: int,
+    tile_bundle: dict[str, Any],
+    water_color: Color,
+    park_color: Color,
+    building_color: Color,
+    border_color: Color,
+    road_color: Color,
+) -> None:
+    min_world_x = float(tile_bundle.get("min_world_x", 0.0))
+    min_world_y = float(tile_bundle.get("min_world_y", 0.0))
+    world_width = max(
+        1e-9,
+        float(tile_bundle.get("world_width", tile_bundle.get("world_tiles", 1.0))),
+    )
+    world_height = max(
+        1e-9,
+        float(tile_bundle.get("world_height", tile_bundle.get("world_tiles", 1.0))),
+    )
+    tiles = tile_bundle.get("tiles", [])
+
+    for tile in tiles:
+        tile_data = tile.get("data")
+        if not isinstance(tile_data, dict):
+            continue
+        tile_x = int(tile.get("x_unwrapped", tile.get("x", 0)))
+        tile_y = int(tile.get("y", 0))
+        _draw_map_tile_in_view(
+            canvas=canvas,
+            rect=rect,
+            zoom=zoom,
+            tile_data=tile_data,
+            tile_x=tile_x,
+            tile_y=tile_y,
+            min_world_x=min_world_x,
+            min_world_y=min_world_y,
+            world_width=world_width,
+            world_height=world_height,
+            water_color=water_color,
+            park_color=park_color,
+            building_color=building_color,
+            border_color=border_color,
+            road_color=road_color,
+        )
+
+
+def _draw_map_tile_in_view(
+    *,
+    canvas: PixelCanvas,
+    rect: Rect,
+    zoom: int,
+    tile_data: dict[str, Any],
+    tile_x: int,
+    tile_y: int,
+    min_world_x: float,
+    min_world_y: float,
+    world_width: float,
+    world_height: float,
+    water_color: Color,
+    park_color: Color,
+    building_color: Color,
+    border_color: Color,
+    road_color: Color,
+) -> None:
+    for layer_name in ("water", "waterway"):
+        layer = tile_data.get(layer_name)
+        if not layer:
+            continue
+        extent = int(layer.get("extent", 4096))
+        for feature in layer.get("features", []):
+            _draw_feature_geometry_view(
+                canvas,
+                rect,
+                extent,
+                tile_x,
+                tile_y,
+                min_world_x,
+                min_world_y,
+                world_width,
+                world_height,
+                feature.get("geometry", {}),
+                water_color,
+                1,
+            )
+
+    for layer_name in ("landuse", "landcover"):
+        layer = tile_data.get(layer_name)
+        if not layer:
+            continue
+        extent = int(layer.get("extent", 4096))
+        for feature in layer.get("features", []):
+            props = feature.get("properties", {})
+            if props.get("class") not in _MAP_PARK_CLASSES:
+                continue
+            geometry = feature.get("geometry", {})
+            geom_type = geometry.get("type")
+            coords = geometry.get("coordinates", [])
+            if geom_type == "Polygon":
+                _draw_polygon_geometry_view(
+                    canvas,
+                    rect,
+                    [coords],
+                    extent,
+                    tile_x,
+                    tile_y,
+                    min_world_x,
+                    min_world_y,
+                    world_width,
+                    world_height,
+                    park_color,
+                )
+            elif geom_type == "MultiPolygon":
+                _draw_polygon_geometry_view(
+                    canvas,
+                    rect,
+                    coords,
+                    extent,
+                    tile_x,
+                    tile_y,
+                    min_world_x,
+                    min_world_y,
+                    world_width,
+                    world_height,
+                    park_color,
+                )
+
+    for layer_name in ("building", "building_part", "landuse_overlay", "landuse"):
+        layer = tile_data.get(layer_name)
+        if not layer:
+            continue
+        extent = int(layer.get("extent", 4096))
+        for feature in layer.get("features", []):
+            props = feature.get("properties", {})
+            if layer_name in {"landuse_overlay", "landuse"} and props.get("class") not in _MAP_URBAN_CLASSES:
+                continue
+            geometry = feature.get("geometry", {})
+            geom_type = geometry.get("type")
+            coords = geometry.get("coordinates", [])
+            if geom_type == "Polygon":
+                _draw_polygon_geometry_view(
+                    canvas,
+                    rect,
+                    [coords],
+                    extent,
+                    tile_x,
+                    tile_y,
+                    min_world_x,
+                    min_world_y,
+                    world_width,
+                    world_height,
+                    building_color,
+                )
+            elif geom_type == "MultiPolygon":
+                _draw_polygon_geometry_view(
+                    canvas,
+                    rect,
+                    coords,
+                    extent,
+                    tile_x,
+                    tile_y,
+                    min_world_x,
+                    min_world_y,
+                    world_width,
+                    world_height,
+                    building_color,
+                )
+
+    admin = tile_data.get("admin")
+    if admin:
+        extent = int(admin.get("extent", 4096))
+        for feature in admin.get("features", []):
+            props = feature.get("properties", {})
+            if not _should_draw_admin(props, zoom):
+                continue
+            _draw_feature_geometry_view(
+                canvas,
+                rect,
+                extent,
+                tile_x,
+                tile_y,
+                min_world_x,
+                min_world_y,
+                world_width,
+                world_height,
+                feature.get("geometry", {}),
+                border_color,
+                1,
+            )
+
+    roads = tile_data.get("road")
+    if roads:
+        extent = int(roads.get("extent", 4096))
+        allowed_classes = _allowed_road_classes(zoom)
+        sample_mod = _road_density_mod(zoom)
+        for feature in roads.get("features", []):
+            props = feature.get("properties", {})
+            if props.get("class") not in allowed_classes:
+                continue
+            if sample_mod > 1 and (_road_bucket(props) % sample_mod) != 0:
+                continue
+            _draw_feature_geometry_view(
+                canvas,
+                rect,
+                extent,
+                tile_x,
+                tile_y,
+                min_world_x,
+                min_world_y,
+                world_width,
+                world_height,
+                feature.get("geometry", {}),
+                road_color,
+                1,
+            )
+
+
+def _draw_feature_geometry(
+    canvas: PixelCanvas,
+    rect: Rect,
+    extent: int,
+    geometry: dict[str, Any],
+    color: Color,
+    width: int,
+) -> None:
+    geom_type = geometry.get("type")
+    coords = geometry.get("coordinates", [])
+    if geom_type == "Polygon":
+        _draw_polygon_geometry(canvas, rect, [coords], extent, color)
+    elif geom_type == "MultiPolygon":
+        _draw_polygon_geometry(canvas, rect, coords, extent, color)
+    elif geom_type == "LineString":
+        _draw_linestring(canvas, rect, coords, extent, color, width)
+    elif geom_type == "MultiLineString":
+        for line in coords:
+            _draw_linestring(canvas, rect, line, extent, color, width)
+
+
+def _tile_to_screen(point: list[float], rect: Rect, extent: int) -> tuple[float, float]:
+    denom = max(1, extent - 1)
+    norm_x = min(max(point[0] / denom, 0.0), 1.0)
+    norm_y = min(max(point[1] / denom, 0.0), 1.0)
+    x = rect.x + (norm_x * max(1, rect.width - 1))
+    y = rect.y + (norm_y * max(1, rect.height - 1))
+    return x, y
+
+
+def _tile_to_screen_view(
+    point: list[float],
+    rect: Rect,
+    extent: int,
+    tile_x: int,
+    tile_y: int,
+    min_world_x: float,
+    min_world_y: float,
+    world_width: float,
+    world_height: float,
+) -> tuple[float, float]:
+    denom = max(1, extent - 1)
+    local_x = min(max(point[0] / denom, 0.0), 1.0)
+    local_y = min(max(point[1] / denom, 0.0), 1.0)
+    world_x = tile_x + local_x
+    world_y = tile_y + local_y
+    content_w = max(1.0, float(rect.width - 1))
+    content_h = max(1.0, float(rect.height - 1))
+    scale = min(content_w / world_width, content_h / world_height)
+    draw_w = world_width * scale
+    draw_h = world_height * scale
+    origin_x = rect.x + ((content_w - draw_w) * 0.5)
+    origin_y = rect.y + ((content_h - draw_h) * 0.5)
+    x = origin_x + ((world_x - min_world_x) * scale)
+    y = origin_y + ((world_y - min_world_y) * scale)
+    return x, y
+
+
+def _draw_feature_geometry_view(
+    canvas: PixelCanvas,
+    rect: Rect,
+    extent: int,
+    tile_x: int,
+    tile_y: int,
+    min_world_x: float,
+    min_world_y: float,
+    world_width: float,
+    world_height: float,
+    geometry: dict[str, Any],
+    color: Color,
+    width: int,
+) -> None:
+    geom_type = geometry.get("type")
+    coords = geometry.get("coordinates", [])
+    if geom_type == "Polygon":
+        _draw_polygon_geometry_view(
+            canvas,
+            rect,
+            [coords],
+            extent,
+            tile_x,
+            tile_y,
+            min_world_x,
+            min_world_y,
+            world_width,
+            world_height,
+            color,
+        )
+    elif geom_type == "MultiPolygon":
+        _draw_polygon_geometry_view(
+            canvas,
+            rect,
+            coords,
+            extent,
+            tile_x,
+            tile_y,
+            min_world_x,
+            min_world_y,
+            world_width,
+            world_height,
+            color,
+        )
+    elif geom_type == "LineString":
+        _draw_linestring_view(
+            canvas,
+            rect,
+            coords,
+            extent,
+            tile_x,
+            tile_y,
+            min_world_x,
+            min_world_y,
+            world_width,
+            world_height,
+            color,
+            width,
+        )
+    elif geom_type == "MultiLineString":
+        for line in coords:
+            _draw_linestring_view(
+                canvas,
+                rect,
+                line,
+                extent,
+                tile_x,
+                tile_y,
+                min_world_x,
+                min_world_y,
+                world_width,
+                world_height,
+                color,
+                width,
+            )
+
+
+def _draw_linestring_view(
+    canvas: PixelCanvas,
+    rect: Rect,
+    line: list[list[float]],
+    extent: int,
+    tile_x: int,
+    tile_y: int,
+    min_world_x: float,
+    min_world_y: float,
+    world_width: float,
+    world_height: float,
+    color: Color,
+    width: int,
+) -> None:
+    if len(line) < 2:
+        return
+    points = [
+        _tile_to_screen_view(
+            point,
+            rect,
+            extent,
+            tile_x,
+            tile_y,
+            min_world_x,
+            min_world_y,
+            world_width,
+            world_height,
+        )
+        for point in line
+    ]
+    for index in range(len(points) - 1):
+        x0, y0 = points[index]
+        x1, y1 = points[index + 1]
+        _draw_line(canvas, int(round(x0)), int(round(y0)), int(round(x1)), int(round(y1)), color, width)
+
+
+def _draw_polygon_geometry_view(
+    canvas: PixelCanvas,
+    rect: Rect,
+    coordinates: Any,
+    extent: int,
+    tile_x: int,
+    tile_y: int,
+    min_world_x: float,
+    min_world_y: float,
+    world_width: float,
+    world_height: float,
+    color: Color,
+) -> None:
+    for polygon in coordinates:
+        if not polygon:
+            continue
+        outer = [
+            _tile_to_screen_view(
+                point,
+                rect,
+                extent,
+                tile_x,
+                tile_y,
+                min_world_x,
+                min_world_y,
+                world_width,
+                world_height,
+            )
+            for point in polygon[0]
+        ]
+        holes = [
+            [
+                _tile_to_screen_view(
+                    point,
+                    rect,
+                    extent,
+                    tile_x,
+                    tile_y,
+                    min_world_x,
+                    min_world_y,
+                    world_width,
+                    world_height,
+                )
+                for point in hole
+            ]
+            for hole in polygon[1:]
+        ]
+        _fill_polygon(canvas, rect, outer, holes, color)
+
+
+def _draw_linestring(
+    canvas: PixelCanvas,
+    rect: Rect,
+    line: list[list[float]],
+    extent: int,
+    color: Color,
+    width: int,
+) -> None:
+    if len(line) < 2:
+        return
+    points = [_tile_to_screen(point, rect, extent) for point in line]
+    for index in range(len(points) - 1):
+        x0, y0 = points[index]
+        x1, y1 = points[index + 1]
+        _draw_line(canvas, int(round(x0)), int(round(y0)), int(round(x1)), int(round(y1)), color, width)
+
+
+def _draw_line(
+    canvas: PixelCanvas,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    color: Color,
+    width: int,
+) -> None:
+    width = max(1, width)
+    dx = abs(x1 - x0)
+    sx = 1 if x0 < x1 else -1
+    dy = -abs(y1 - y0)
+    sy = 1 if y0 < y1 else -1
+    err = dx + dy
+
+    while True:
+        if width == 1:
+            canvas.pixel(x0, y0, color)
+        elif width == 2:
+            canvas.pixel(x0, y0, color)
+            # Use a directional pair so width=2 stays exactly two pixels thick.
+            if dx >= abs(dy):
+                canvas.pixel(x0, y0 + 1, color)
+            else:
+                canvas.pixel(x0 + 1, y0, color)
+        else:
+            half = width // 2
+            for oy in range(-half, half + 1):
+                for ox in range(-half, half + 1):
+                    canvas.pixel(x0 + ox, y0 + oy, color)
+        if x0 == x1 and y0 == y1:
+            return
+        e2 = 2 * err
+        if e2 >= dy:
+            err += dy
+            x0 += sx
+        if e2 <= dx:
+            err += dx
+            y0 += sy
+
+
+def _draw_polygon_geometry(
+    canvas: PixelCanvas,
+    rect: Rect,
+    coordinates: Any,
+    extent: int,
+    color: Color,
+) -> None:
+    for polygon in coordinates:
+        if not polygon:
+            continue
+        outer = [_tile_to_screen(point, rect, extent) for point in polygon[0]]
+        holes = [[_tile_to_screen(point, rect, extent) for point in hole] for hole in polygon[1:]]
+        _fill_polygon(canvas, rect, outer, holes, color)
+
+
+def _fill_polygon(
+    canvas: PixelCanvas,
+    rect: Rect,
+    outer_ring: list[tuple[float, float]],
+    holes: list[list[tuple[float, float]]],
+    color: Color,
+) -> None:
+    if len(outer_ring) < 3:
+        return
+
+    min_x = max(rect.x, int(min(point[0] for point in outer_ring)))
+    max_x = min(rect.right - 1, int(max(point[0] for point in outer_ring)))
+    min_y = max(rect.y, int(min(point[1] for point in outer_ring)))
+    max_y = min(rect.bottom - 1, int(max(point[1] for point in outer_ring)))
+
+    for y in range(min_y, max_y + 1):
+        for x in range(min_x, max_x + 1):
+            px = x + 0.5
+            py = y + 0.5
+            if not _point_in_ring(px, py, outer_ring):
+                continue
+            if any(_point_in_ring(px, py, hole) for hole in holes):
+                continue
+            canvas.pixel(x, y, color)
+
+
+def _point_in_ring(px: float, py: float, ring: list[tuple[float, float]]) -> bool:
+    if len(ring) < 3:
+        return False
+    inside = False
+    j = len(ring) - 1
+    for i in range(len(ring)):
+        xi, yi = ring[i]
+        xj, yj = ring[j]
+        intersects = ((yi > py) != (yj > py)) and (
+            px < ((xj - xi) * (py - yi) / ((yj - yi) if (yj - yi) != 0 else 1e-9) + xi)
+        )
+        if intersects:
+            inside = not inside
+        j = i
+    return inside
