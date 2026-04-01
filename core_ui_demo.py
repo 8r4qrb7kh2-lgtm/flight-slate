@@ -418,6 +418,40 @@ MAPBOX_STYLE_OWNER = "jackstoller"
 MAPBOX_TOKEN = os.environ.get("MAPBOX_TOKEN", "")
 ASSETS_DIR = Path(__file__).resolve().with_name("assets")
 IMAGE_SWITCH_SECONDS = 1.25
+AUTO_PAGE_SECONDS = 6.0
+
+
+def _read_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return default
+
+
+def _default_hardware_mapping() -> str:
+    env_value = os.environ.get("FLIGHT_SLATE_HARDWARE_MAPPING")
+    if env_value and env_value.strip():
+        return env_value.strip()
+    if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+        # Headless Linux boxes (Pi) should default to the physical matrix.
+        return "adafruit-hat-pwm"
+    return "mock"
+
+
+def _build_matrix_options() -> RGBMatrixOptions:
+    return RGBMatrixOptions(
+        rows=_read_int_env("FLIGHT_SLATE_MATRIX_ROWS", 64),
+        cols=_read_int_env("FLIGHT_SLATE_MATRIX_COLS", 128),
+        chain_length=_read_int_env("FLIGHT_SLATE_MATRIX_CHAIN", 1),
+        parallel=_read_int_env("FLIGHT_SLATE_MATRIX_PARALLEL", 1),
+        brightness=max(1, min(100, _read_int_env("FLIGHT_SLATE_MATRIX_BRIGHTNESS", 100))),
+        hardware_mapping=_default_hardware_mapping(),
+        pwm_bits=max(1, min(11, _read_int_env("FLIGHT_SLATE_MATRIX_PWM_BITS", 11))),
+        limit_refresh_rate_hz=max(1, _read_int_env("FLIGHT_SLATE_REFRESH_HZ", TARGET_REFRESH_HZ)),
+    )
 
 
 @functools.lru_cache(maxsize=1)
@@ -976,7 +1010,7 @@ def _publish_perf_stats(
 def main() -> int:
     try:
         with _HighResWindowsTimer(), ThreadPoolExecutor(max_workers=1) as map_executor:
-            app = App(options=RGBMatrixOptions(limit_refresh_rate_hz=TARGET_REFRESH_HZ))
+            app = App(options=_build_matrix_options())
             state = AppState()
             editor_holder: dict[str, Any] = {"window": None}
 
@@ -1019,6 +1053,13 @@ def main() -> int:
                 state.marquee_x = elapsed_s * MARQUEE_X_PIXELS_PER_SECOND
                 state.marquee_y = elapsed_s * MARQUEE_Y_PIXELS_PER_SECOND
                 state.spinner_phase = elapsed_s * SPINNER_PHASE_STEPS_PER_SECOND
+
+                # Headless hardware mode has no keyboard events; auto-rotate demo pages.
+                if root is None:
+                    next_page = int(elapsed_s / AUTO_PAGE_SECONDS) % len(DEMO_PAGES)
+                    if next_page != state.page_index:
+                        state.page_index = next_page
+                        needs_render = True
 
                 if _load_asset_png_frames():
                     next_image_index = int(elapsed_s / IMAGE_SWITCH_SECONDS)

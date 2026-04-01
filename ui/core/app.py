@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections import deque
+import importlib
+import os
+import time
 from typing import Any
 
-from mock_led_matrix import MockRGBMatrix
 from standard_led_matrix_interface import InteractiveLEDMatrix, LEDMatrix, RGBMatrixOptions
 
 from ui.core.canvas import PixelCanvas, Rect
@@ -23,7 +25,7 @@ class App:
         options: RGBMatrixOptions | None = None,
     ) -> None:
         self.options = options or RGBMatrixOptions(limit_refresh_rate_hz=20)
-        self.matrix = matrix or MockRGBMatrix(self.options)
+        self.matrix = matrix or _build_default_matrix(self.options)
         self.canvas = PixelCanvas(self.options.width, self.options.height, colors.BLACK)
         self._last_frame_bytes = bytearray(self.options.width * self.options.height * 3)
         self._frame_initialized = False
@@ -133,3 +135,78 @@ class App:
 
         self._last_frame_bytes[:] = frame_bytes
         self._frame_initialized = True
+
+
+def _build_default_matrix(options: RGBMatrixOptions) -> InteractiveLEDMatrix:
+    hardware_mapping = (options.hardware_mapping or "mock").strip().lower()
+    if hardware_mapping == "mock":
+        from mock_led_matrix import MockRGBMatrix
+
+        return MockRGBMatrix(options)
+
+    return _RPiRGBMatrix(options)
+
+
+class _RPiRGBMatrix:
+    """Thin adapter around rpi-rgb-led-matrix for headless board rendering."""
+
+    def __init__(self, options: RGBMatrixOptions) -> None:
+        try:
+            rgbmatrix = importlib.import_module("rgbmatrix")
+        except Exception as exc:
+            raise RuntimeError(
+                "rpi-rgb-led-matrix is required for non-mock hardware mapping. "
+                "Install it on the Pi or set FLIGHT_SLATE_HARDWARE_MAPPING=mock."
+            ) from exc
+
+        native_options = rgbmatrix.RGBMatrixOptions()
+        native_options.rows = int(options.rows)
+        native_options.cols = int(options.cols)
+        native_options.chain_length = int(options.chain_length)
+        native_options.parallel = int(options.parallel)
+        native_options.brightness = int(options.brightness)
+        native_options.hardware_mapping = options.hardware_mapping
+        native_options.pwm_bits = int(options.pwm_bits)
+
+        # Allow board-specific tuning without changing code.
+        gpio_slowdown = os.environ.get("FLIGHT_SLATE_LED_GPIO_SLOWDOWN")
+        if gpio_slowdown:
+            native_options.gpio_slowdown = int(gpio_slowdown)
+        pwm_lsb_ns = os.environ.get("FLIGHT_SLATE_LED_PWM_LSB_NANOSECONDS")
+        if pwm_lsb_ns:
+            native_options.pwm_lsb_nanoseconds = int(pwm_lsb_ns)
+
+        self._matrix = rgbmatrix.RGBMatrix(options=native_options)
+        self.width = int(getattr(self._matrix, "width", options.width))
+        self.height = int(getattr(self._matrix, "height", options.height))
+        self._closed = False
+
+    def SetPixel(self, x: int, y: int, r: int, g: int, b: int) -> None:
+        if self._closed:
+            return
+        self._matrix.SetPixel(x, y, int(r), int(g), int(b))
+
+    def Clear(self) -> None:
+        if self._closed:
+            return
+        self._matrix.Clear()
+
+    def process(self) -> bool:
+        if self._closed:
+            return False
+        # Keep interactive API compatible with the desktop mock loop.
+        time.sleep(0)
+        return True
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._matrix.Clear()
+        except Exception:
+            pass
