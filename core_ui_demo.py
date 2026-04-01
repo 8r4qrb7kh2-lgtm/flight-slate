@@ -431,13 +431,23 @@ def _read_int_env(name: str, default: int) -> int:
         return default
 
 
+def _read_str_env(name: str) -> str | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    value = raw.strip()
+    return value or None
+
+
 def _default_hardware_mapping() -> str:
     env_value = os.environ.get("FLIGHT_SLATE_HARDWARE_MAPPING")
     if env_value and env_value.strip():
         return env_value.strip()
     if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
         # Headless Linux boxes (Pi) should default to the physical matrix.
-        return "adafruit-hat-pwm"
+        # Use the non-PWM mapping by default; the PWM mapping expects the Adafruit
+        # hardware mod (GPIO4<->GPIO18) to be present.
+        return "adafruit-hat"
     return "mock"
 
 
@@ -449,6 +459,18 @@ def _build_matrix_options() -> RGBMatrixOptions:
         parallel=_read_int_env("FLIGHT_SLATE_MATRIX_PARALLEL", 1),
         brightness=max(1, min(100, _read_int_env("FLIGHT_SLATE_MATRIX_BRIGHTNESS", 100))),
         hardware_mapping=_default_hardware_mapping(),
+        panel_type=_read_str_env("FLIGHT_SLATE_LED_PANEL_TYPE"),
+        row_addr_type=(
+            None
+            if (row_addr := _read_int_env("FLIGHT_SLATE_LED_ROW_ADDR_TYPE", -1)) < 0
+            else row_addr
+        ),
+        multiplexing=(
+            None
+            if (mux := _read_int_env("FLIGHT_SLATE_LED_MULTIPLEXING", -1)) < 0
+            else mux
+        ),
+        rgb_sequence=_read_str_env("FLIGHT_SLATE_LED_RGB_SEQUENCE"),
         pwm_bits=max(1, min(11, _read_int_env("FLIGHT_SLATE_MATRIX_PWM_BITS", 11))),
         limit_refresh_rate_hz=max(1, _read_int_env("FLIGHT_SLATE_REFRESH_HZ", TARGET_REFRESH_HZ)),
     )

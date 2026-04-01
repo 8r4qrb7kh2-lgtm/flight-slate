@@ -166,6 +166,14 @@ class _RPiRGBMatrix:
         native_options.parallel = int(options.parallel)
         native_options.brightness = int(options.brightness)
         native_options.hardware_mapping = options.hardware_mapping
+        if options.panel_type:
+            native_options.panel_type = options.panel_type
+        if options.row_addr_type is not None:
+            native_options.row_address_type = int(options.row_addr_type)
+        if options.multiplexing is not None:
+            native_options.multiplexing = int(options.multiplexing)
+        if options.rgb_sequence:
+            native_options.led_rgb_sequence = options.rgb_sequence
         native_options.pwm_bits = int(options.pwm_bits)
 
         # Allow board-specific tuning without changing code.

@@ -14,6 +14,10 @@ class RGBMatrixOptions:
     parallel: int = 1
     brightness: int = 100
     hardware_mapping: str = "mock"
+    panel_type: str | None = None
+    row_addr_type: int | None = None
+    multiplexing: int | None = None
+    rgb_sequence: str | None = None
     pwm_bits: int = 11
     limit_refresh_rate_hz: int = 30
 
