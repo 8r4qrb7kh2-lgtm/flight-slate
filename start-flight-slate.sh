@@ -17,4 +17,11 @@ if [ -d .git ]; then
   fi
 fi
 
-exec /home/remote/flight-slate/.venv/bin/python /home/remote/flight-slate/core_ui_demo.py
+PYTHON_BIN="/home/remote/flight-slate/.venv/bin/python"
+APP_BIN="/home/remote/flight-slate/core_ui_demo.py"
+
+if [ "${EUID}" -eq 0 ]; then
+  exec env "PATH=${PATH}" "${PYTHON_BIN}" "${APP_BIN}"
+else
+  exec sudo -E env "PATH=${PATH}" "${PYTHON_BIN}" "${APP_BIN}"
+fi
