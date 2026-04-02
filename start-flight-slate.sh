@@ -3,10 +3,9 @@ set -euo pipefail
 
 cd /home/remote/flight-slate
 
-# Auto-export variables from env file.
-set -a
-. ./env.flight-slate.sh
-set +a
+# Match the interactive startup flow exactly.
+source .venv/bin/activate
+source ./env.flight-slate.sh
 
 # Try to update code, but never fail startup if offline or pull fails.
 if [ -d .git ]; then
@@ -17,11 +16,8 @@ if [ -d .git ]; then
   fi
 fi
 
-PYTHON_BIN="/home/remote/flight-slate/.venv/bin/python"
-APP_BIN="/home/remote/flight-slate/core_ui_demo.py"
-
 if [ "${EUID}" -eq 0 ]; then
-  exec env "PATH=${PATH}" "${PYTHON_BIN}" "${APP_BIN}"
+  exec env "PATH=${PATH}" python core_ui_demo.py
 else
-  exec sudo -E env "PATH=${PATH}" "${PYTHON_BIN}" "${APP_BIN}"
+  exec sudo -E env "PATH=${PATH}" python core_ui_demo.py
 fi
