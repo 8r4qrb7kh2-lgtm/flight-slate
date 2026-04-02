@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
 
 cd /home/remote/flight-slate
-
-# Match the interactive startup flow exactly.
-source .venv/bin/activate
-source ./env.flight-slate.sh
 
 # Try to update code, but never fail startup if offline or pull fails.
 if [ -d .git ]; then
@@ -16,8 +11,6 @@ if [ -d .git ]; then
   fi
 fi
 
-if [ "${EUID}" -eq 0 ]; then
-  exec env "PATH=${PATH}" python core_ui_demo.py
-else
-  exec sudo -E env "PATH=${PATH}" python core_ui_demo.py
-fi
+source .venv/bin/activate
+./env.flight-slate.sh
+sudo -E env "PATH=$PATH" python core_ui_demo.py
