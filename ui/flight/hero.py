@@ -55,14 +55,10 @@ HERO_ROW_HEIGHT = LOGO_SIZE  # 32
 STATS_ROW_HEIGHT = TOP_HEIGHT - HERO_ROW_HEIGHT - DIVIDER_THICKNESS  # 19
 DETAILS_WIDTH = LEFT_AREA_WIDTH - LOGO_SIZE - DIVIDER_THICKNESS  # 54
 
-# Stat cell widths in the stats row — 4 evenly-sized cells (sum + 3 dividers = LEFT_AREA_WIDTH).
-_STAT_BASE = (LEFT_AREA_WIDTH - 3 * DIVIDER_THICKNESS) // 4
-STAT_CELL_WIDTHS: tuple[int, int, int, int] = (
-    _STAT_BASE,
-    _STAT_BASE,
-    _STAT_BASE,
-    LEFT_AREA_WIDTH - 3 * DIVIDER_THICKNESS - 3 * _STAT_BASE,
-)
+# Stats row is a 2x2 grid: two rows of two cells each, with FONT_5X7 values.
+STAT_CELL_W_LEFT = (LEFT_AREA_WIDTH - DIVIDER_THICKNESS) // 2  # 43
+STAT_CELL_W_RIGHT = LEFT_AREA_WIDTH - DIVIDER_THICKNESS - STAT_CELL_W_LEFT  # 43
+STAT_SUBROW_H = (STATS_ROW_HEIGHT - DIVIDER_THICKNESS) // 2  # 9
 
 COLOR_LABEL = colors.DIM_WHITE
 COLOR_VALUE = colors.WHITE
@@ -215,35 +211,41 @@ def _aircraft_line(flight: Flight) -> str:
     return flight.icao24.upper() or ""
 
 
-def _build_stat_cell(label: str, value: str, *, label_color: Color = COLOR_ACCENT, value_color: Color = COLOR_VALUE) -> Widget:
-    """Compact stat cell: 1-char label + value, all in FONT_4X6, vertically centered.
+def _build_stat_cell(
+    label: str,
+    value: str,
+    cell_w: int,
+    *,
+    label_color: Color = COLOR_ACCENT,
+    value_color: Color = COLOR_VALUE,
+) -> Widget:
+    """One stat in the 2x2 grid: FONT_5X7 letter prefix + value, centered.
 
-    The 4-cell stats row leaves ~21 px per cell, which is too tight for the old
-    icon+FONT_5X7 layout. Letter prefix in FONT_4X6 keeps the meaning clear at
-    a glance without burning pixels on icons.
+    9-tall cell vertically holds a 7-tall FONT_5X7 line with 1 px padding
+    top and bottom.
     """
-    label_w, _ = FONT_4X6.measure(label)
-    value_w, _ = FONT_4X6.measure(value)
-    # 1px gap between label and value reads better than flush.
-    content_row = Row(
-        gap=1,
+    label_w, _ = FONT_5X7.measure(label)
+    value_w, _ = FONT_5X7.measure(value)
+    gap = 2
+    content_w = label_w + gap + value_w
+    side_pad = max(0, (cell_w - content_w) // 2)
+
+    content = Row(
+        gap=gap,
         sizes=[label_w, value_w],
         children=[
-            Text(text=label, font=FONT_4X6, align="left", overflow="clip", color=label_color),
-            Text(text=value, font=FONT_4X6, align="left", overflow="clip", color=value_color),
+            Text(text=label, font=FONT_5X7, align="left", overflow="clip", color=label_color),
+            Text(text=value, font=FONT_5X7, align="left", overflow="clip", color=value_color),
         ],
     )
-    # Center the row's contents horizontally within the cell.
-    total = label_w + 1 + value_w
-    side_pad = max(0, (STAT_CELL_WIDTHS[0] - total) // 2)
     centered = Row(
         gap=0,
-        sizes=[side_pad, total],
-        children=[_spacer(), content_row],
+        sizes=[side_pad, content_w],
+        children=[_spacer(), content],
     )
     return Column(
         gap=0,
-        sizes=[6, 6, 7],
+        sizes=[1, 7, 1],
         children=[_spacer(), centered, _spacer()],
     )
 
@@ -296,26 +298,26 @@ def _parse_iso_utc(value: str | None) -> "datetime | None":
 
 def _build_stats_row(flight: Flight) -> Widget:
     eta_label, eta_value, eta_color = _format_eta_or_delay(flight)
-    return Row(
+
+    def _subrow(left: Widget, right: Widget) -> Widget:
+        return Row(
+            gap=0,
+            sizes=[STAT_CELL_W_LEFT, DIVIDER_THICKNESS, STAT_CELL_W_RIGHT],
+            children=[left, _divider(), right],
+        )
+
+    top = _subrow(
+        _build_stat_cell("S", _format_ground_speed(flight.ground_speed_kt), STAT_CELL_W_LEFT),
+        _build_stat_cell("A", _format_altitude(flight.altitude_ft), STAT_CELL_W_RIGHT),
+    )
+    bottom = _subrow(
+        _build_stat_cell("V", _format_vertical_rate(flight.vertical_rate_fpm), STAT_CELL_W_LEFT),
+        _build_stat_cell(eta_label, eta_value, STAT_CELL_W_RIGHT, value_color=eta_color),
+    )
+    return Column(
         gap=0,
-        sizes=[
-            STAT_CELL_WIDTHS[0],
-            DIVIDER_THICKNESS,
-            STAT_CELL_WIDTHS[1],
-            DIVIDER_THICKNESS,
-            STAT_CELL_WIDTHS[2],
-            DIVIDER_THICKNESS,
-            STAT_CELL_WIDTHS[3],
-        ],
-        children=[
-            _build_stat_cell("S", _format_ground_speed(flight.ground_speed_kt)),
-            _divider(),
-            _build_stat_cell("A", _format_altitude(flight.altitude_ft)),
-            _divider(),
-            _build_stat_cell("V", _format_vertical_rate(flight.vertical_rate_fpm)),
-            _divider(),
-            _build_stat_cell(eta_label, eta_value, value_color=eta_color),
-        ],
+        sizes=[STAT_SUBROW_H, DIVIDER_THICKNESS, STAT_SUBROW_H],
+        children=[top, _divider(), bottom],
     )
 
 
