@@ -755,9 +755,9 @@ def _build_fun_fact_footer() -> Widget:
         )
     else:
         elapsed = max(0.0, time.monotonic() - _idle_foot.fact_started_mono)
-        # Negative offset shifts the content rightward over time, producing
-        # left-to-right scroll motion (text enters from the left edge).
-        scroll_offset = -elapsed * _FACT_SCROLL_PX_PER_S
+        # Positive offset shifts the content leftward over time, producing
+        # right-to-left scroll motion (the standard reading-marquee direction).
+        scroll_offset = elapsed * _FACT_SCROLL_PX_PER_S
         line = Text(
             text=text,
             font=FONT_4X6,
