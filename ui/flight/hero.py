@@ -227,8 +227,9 @@ def _build_stat_cell(
     label_w, _ = FONT_5X7.measure(label)
     value_w, _ = FONT_5X7.measure(value)
     gap = 2
-    content_w = label_w + gap + value_w
-    side_pad = max(0, (cell_w - content_w) // 2)
+    content_w = min(cell_w, label_w + gap + value_w)
+    left_pad = max(0, (cell_w - content_w) // 2)
+    right_pad = max(0, cell_w - content_w - left_pad)
 
     content = Row(
         gap=gap,
@@ -238,10 +239,11 @@ def _build_stat_cell(
             Text(text=value, font=FONT_5X7, align="left", overflow="clip", color=value_color),
         ],
     )
+    # sizes must sum to cell_w (Row treats them as proportions otherwise).
     centered = Row(
         gap=0,
-        sizes=[side_pad, content_w],
-        children=[_spacer(), content],
+        sizes=[left_pad, content_w, right_pad],
+        children=[_spacer(), content, _spacer()],
     )
     return Column(
         gap=0,
@@ -285,14 +287,16 @@ def _parse_iso_utc(value: str | None) -> "datetime | None":
 
 def _build_value_cell(value: str, color: Color, cell_w: int) -> Widget:
     """Single value, no label, centered horizontally and vertically in a 9-tall cell."""
-    value_w, _ = FONT_5X7.measure(value)
-    side_pad = max(0, (cell_w - value_w) // 2)
+    value_w = min(cell_w, FONT_5X7.measure(value)[0])
+    left_pad = max(0, (cell_w - value_w) // 2)
+    right_pad = max(0, cell_w - value_w - left_pad)
     centered = Row(
         gap=0,
-        sizes=[side_pad, value_w],
+        sizes=[left_pad, value_w, right_pad],
         children=[
             _spacer(),
             Text(text=value, font=FONT_5X7, align="left", overflow="clip", color=color),
+            _spacer(),
         ],
     )
     return Column(
