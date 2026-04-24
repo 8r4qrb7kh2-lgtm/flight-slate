@@ -175,8 +175,6 @@ def _format_distance(distance_nm: float | None) -> str:
 
 
 def _route_text(flight: Flight) -> str:
-    if flight.route_verified and flight.origin_iata and flight.destination_iata:
-        return f"{flight.origin_iata} > {flight.destination_iata}"
     compass = _compass_letter(flight.bearing_deg)
     distance = _format_distance(flight.distance_nm)
     parts = [p for p in (compass, distance) if p]
@@ -522,6 +520,40 @@ def _build_top_row(snapshot: AirSnapshot) -> Widget:
     )
 
 
+def _build_dep_arr_row(flight: Flight | None) -> Widget:
+    """Footer row showing origin/destination codes + cities (replaces the slider)."""
+    origin_code = (flight.origin_iata if flight else None) or ""
+    origin_city = (flight.origin_name if flight else None) or ""
+    dest_code = (flight.destination_iata if flight else None) or ""
+    dest_city = (flight.destination_name if flight else None) or ""
+
+    # 3-char IATA at FONT_4X6 = 12px; 13px cell leaves 1px breathing room.
+    code_w = 13
+    city_w = 49
+    gap = 2
+
+    left_half = Row(
+        gap=gap,
+        sizes=[code_w, city_w],
+        children=[
+            Text(text=origin_code, font=FONT_4X6, align="left", overflow="clip", color=COLOR_ACCENT),
+            Text(text=origin_city, font=FONT_4X6, align="left", overflow="clip", color=COLOR_VALUE),
+        ],
+    )
+    right_half = Row(
+        gap=gap,
+        sizes=[city_w, code_w],
+        children=[
+            Text(text=dest_city, font=FONT_4X6, align="right", overflow="clip", color=COLOR_VALUE),
+            Text(text=dest_code, font=FONT_4X6, align="right", overflow="clip", color=COLOR_ACCENT),
+        ],
+    )
+    content = Row(gap=0, sizes=[64, 64], children=[left_half, right_half])
+
+    # Center the 6-tall text within the 11-tall footer strip.
+    return Column(gap=0, sizes=[2, 7, 2], children=[_spacer(), content, _spacer()])
+
+
 def _build_waiting_left(snapshot: AirSnapshot) -> Widget:
     del snapshot  # No longer used; kept for signature parity.
     return Panel(
@@ -577,7 +609,7 @@ def build_flight_hero_page(
         children=[
             _build_top_row(snapshot),
             _divider(),
-            PositionBar(snapshot=snapshot),
+            _build_dep_arr_row(snapshot.selected),
         ],
     )
     return Panel(padding=0, bg=colors.BLACK, border=None, child=body)
