@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import functools
 import math
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -68,6 +69,11 @@ COLOR_RADAR_TAIL_NEAR: Color = (140, 150, 165)
 COLOR_RADAR_TAIL_FAR: Color = (65, 75, 90)
 COLOR_BAR_BG: Color = (18, 32, 44)
 COLOR_BAR_TICK: Color = (90, 130, 160)
+COLOR_RADAR_SWEEP: Color = (60, 200, 90)
+
+SWEEP_PERIOD_S = 4.0
+# (degrees behind the head, brightness 0..1) — classic mechanical-radar fade.
+SWEEP_TRAIL_STEPS: tuple[tuple[int, float], ...] = ((4, 0.55), (8, 0.30), (14, 0.15))
 
 SPEED_COLOR_LOW: Color = (50, 210, 70)    # 100 kt — green
 SPEED_COLOR_MID: Color = (225, 200, 35)   # midpoint — yellow
@@ -321,6 +327,32 @@ def _build_left_column(flight: Flight) -> Widget:
     )
 
 
+class _SweepState:
+    """Persistent radar state across frames (the Radar widget is rebuilt each frame)."""
+
+    def __init__(self) -> None:
+        self.displayed: dict[str, "AircraftPing"] = {}
+        self.last_sweep_deg: float | None = None
+
+
+_sweep_state = _SweepState()
+
+
+def _sweep_angle_deg(now_mono: float) -> float:
+    """Current bearing of the sweep arm, increasing clockwise."""
+    return (now_mono * 360.0 / SWEEP_PERIOD_S) % 360.0
+
+
+def _sweep_arc_covers(prev: float | None, curr: float, target: float) -> bool:
+    """True if the clockwise sweep moved from `prev` past `target` to reach `curr`."""
+    if prev is None:
+        return True
+    if curr >= prev:
+        return prev <= target <= curr
+    # Wrapped through 0/360.
+    return target >= prev or target <= curr
+
+
 @dataclass
 class Radar(Widget):
     """Polar top-down radar with the viewer at center.
@@ -328,6 +360,9 @@ class Radar(Widget):
     Rotated so ``view_bearing_deg`` points up — i.e. a south-facing window
     puts south at the top of the radar, which matches what the viewer sees
     out the window. The horizontal axis is still viewer-left/right.
+
+    A rotating sweep arm refreshes each plane's displayed position only as
+    it passes overhead, mimicking a mechanical PPI radar.
     """
 
     snapshot: AirSnapshot
@@ -353,6 +388,22 @@ class Radar(Widget):
                 cy - math.cos(rel) * distance_frac * radius,
             )
 
+        # Advance the sweep and refresh frozen plane positions for any whose
+        # current bearing the sweep just passed.
+        sweep_deg = _sweep_angle_deg(time.monotonic())
+        prev_sweep_deg = _sweep_state.last_sweep_deg
+        current_by_id: dict[str, "AircraftPing"] = {}
+        for ping in self.snapshot.pings:
+            if not ping.icao24:
+                continue
+            current_by_id[ping.icao24] = ping
+            if _sweep_arc_covers(prev_sweep_deg, sweep_deg, ping.bearing_deg):
+                _sweep_state.displayed[ping.icao24] = ping
+        for icao in list(_sweep_state.displayed.keys()):
+            if icao not in current_by_id:
+                del _sweep_state.displayed[icao]
+        _sweep_state.last_sweep_deg = sweep_deg
+
         with canvas.clip(rect):
             # View cone: two radial lines from center to arc. They span the
             # upper half after rotation, since view_bearing points up.
@@ -372,6 +423,20 @@ class Radar(Widget):
                         COLOR_RADAR_CONE,
                     )
 
+            # Sweep trail behind the arm — drawn before planes so they sit on top.
+            for offset_deg, brightness in SWEEP_TRAIL_STEPS:
+                trail_bearing = (sweep_deg - offset_deg) % 360.0
+                tex, tey = project(trail_bearing, 1.0)
+                trail_color = _lerp_color(colors.BLACK, COLOR_RADAR_SWEEP, brightness)
+                _draw_line(
+                    canvas,
+                    int(round(cx)),
+                    int(round(cy)),
+                    int(round(tex)),
+                    int(round(tey)),
+                    trail_color,
+                )
+
             _draw_circle_outline(canvas, cx, cy, radius, COLOR_RADAR_RING)
 
             # Small center "+" marks the viewer position and anchors the scope.
@@ -388,18 +453,15 @@ class Radar(Widget):
 
             # Each aircraft renders as three adjacent dots: head at the current
             # position (green, or red for the selected flight) plus two trailing
-            # dots. We prefer real recorded positions from PingHistory, but
-            # between 5-second polls most planes move <1 px on a 40-px radar,
-            # so the history dots collapse onto the head. In that case we fall
-            # back to a synthetic 1-px step along the aircraft's track so the
-            # trail is always visible as 3 distinct pixels.
+            # dots. Positions come from the sweep-frozen cache, so a plane only
+            # moves when the arm passes over its current bearing.
 
             def _project_polar(bearing_deg: float, distance_nm: float) -> tuple[int, int]:
                 frac = min(1.0, distance_nm / radius_nm)
                 x, y = project(bearing_deg, frac)
                 return int(round(x)), int(round(y))
 
-            for ping in self.snapshot.pings:
+            for ping in _sweep_state.displayed.values():
                 if ping.distance_nm > radius_nm:
                     continue
                 is_selected = bool(ping.icao24) and ping.icao24 == selected_icao
@@ -415,8 +477,6 @@ class Radar(Widget):
                     synth_dx = synth_dy = 0.0
 
                 def _pick_trail(slot_index: int, used: tuple[tuple[int, int], ...]) -> tuple[int, int] | None:
-                    # Prefer the recorded history point for this slot when it
-                    # lands on a pixel distinct from everything already drawn.
                     if slot_index < len(ping.trail):
                         bearing, distance = ping.trail[slot_index]
                         candidate = _project_polar(bearing, distance)
@@ -441,6 +501,10 @@ class Radar(Widget):
                 if near is not None:
                     canvas.pixel(near[0], near[1], COLOR_RADAR_TAIL_NEAR)
                 canvas.pixel(head[0], head[1], head_color)
+
+            # Main sweep arm — brightest, drawn last so it sits on top.
+            ax, ay = project(sweep_deg, 1.0)
+            _draw_line(canvas, icx, icy, int(round(ax)), int(round(ay)), COLOR_RADAR_SWEEP)
 
 
 @dataclass
