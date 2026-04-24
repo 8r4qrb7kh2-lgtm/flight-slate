@@ -264,80 +264,38 @@ def _split_callsign(callsign: str) -> tuple[str | None, str | None]:
     return None, callsign
 
 
-def _region_bounds(region: Region) -> str:
-    """Bounding box around the region's fetch radius in FR24's NORTH,SOUTH,WEST,EAST format.
+# FR24 charges one credit per *result*, so we want one call returning one
+# result, only when needed. The display ever shows just the closest in-cone
+# in-radar flight, so we only ever look up that one callsign.
+_FR24_NEGATIVE_TTL_S = 3600.0  # don't re-query "no route" callsigns for an hour
 
-    A 10% buffer is added so flights right at the edge of our radar still
-    fall inside the FR24 query box.
+_known_routes: dict[str, tuple[str, ...]] = {}     # callsign → route, kept for process lifetime
+_negative_routes: dict[str, float] = {}            # callsign → ts when "no route" was last seen
+
+
+def _get_route_for(callsign: str, timeout_s: float = DEFAULT_TIMEOUT_S) -> tuple[str, ...] | None:
+    """Return a cached route for ``callsign`` or fetch one from FR24 (1 credit).
+
+    Strategy minimizes credits:
+    * Successful lookups stay cached for the process lifetime (routes don't
+      change for an in-flight aircraft).
+    * "No route" responses are cached for ``_FR24_NEGATIVE_TTL_S`` so we don't
+      keep paying for callsigns FR24 simply doesn't have (private aircraft,
+      etc.) on every snapshot.
+    * Network/HTTP errors aren't cached — we'll retry next snapshot.
     """
-    lat_delta = (region.radius_nm * 1.1) / 60.0  # 1° lat ≈ 60 nm
-    lat_rad = math.radians(region.center_lat)
-    cos_lat = max(0.01, math.cos(lat_rad))  # guard near the poles
-    lon_delta = lat_delta / cos_lat
-    north = region.center_lat + lat_delta
-    south = region.center_lat - lat_delta
-    west = region.center_lon - lon_delta
-    east = region.center_lon + lon_delta
-    return f"{north:.4f},{south:.4f},{west:.4f},{east:.4f}"
+    callsign = callsign.upper()
+    cached = _known_routes.get(callsign)
+    if cached is not None:
+        return cached
+    neg_ts = _negative_routes.get(callsign)
+    if neg_ts is not None and (time.monotonic() - neg_ts) < _FR24_NEGATIVE_TTL_S:
+        return None
 
-
-# Long-lived cache of callsign → route tuple. Routes don't change for a given
-# in-flight aircraft, so keeping this between snapshots cuts FR24 calls drastically.
-_FR24_PERIODIC_INTERVAL_S = 300.0  # full refresh every 5 minutes
-_FR24_MIN_INTERVAL_S = 60.0        # but at most once per minute when a new callsign appears
-
-_known_routes: dict[str, tuple[str, ...]] = {}
-_last_fr24_fetch: float = 0.0
-_last_fr24_bounds: str | None = None
-
-
-def _maybe_refresh_fr24_routes(
-    region: Region,
-    candidate_callsigns: set[str],
-    timeout_s: float = DEFAULT_TIMEOUT_S,
-) -> None:
-    """Refresh ``_known_routes`` only when a refresh actually buys us something.
-
-    Triggers a fetch when (a) the bounds changed, (b) the periodic interval
-    elapsed, or (c) the snapshot has callsigns we don't have routes for AND
-    the short throttle elapsed. Otherwise reuses the dict from the last fetch.
-    """
-    global _last_fr24_fetch, _last_fr24_bounds, _known_routes
-
-    now = time.monotonic()
-    elapsed = now - _last_fr24_fetch
-    bounds = _region_bounds(region)
-
-    new_callsign_present = bool(candidate_callsigns - _known_routes.keys())
-    bounds_changed = bounds != _last_fr24_bounds
-    periodic_due = elapsed >= _FR24_PERIODIC_INTERVAL_S
-    on_demand_ok = new_callsign_present and elapsed >= _FR24_MIN_INTERVAL_S
-
-    if not (bounds_changed or periodic_due or on_demand_ok):
-        return
-
-    fresh = _fetch_fr24_routes(region, timeout_s=timeout_s)
-    if fresh:
-        # Full replacement: drops routes for flights FR24 no longer sees, picks
-        # up everything currently in the area.
-        _known_routes = fresh
-        _last_fr24_fetch = now
-        _last_fr24_bounds = bounds
-
-
-def _fetch_fr24_routes(region: Region, timeout_s: float = DEFAULT_TIMEOUT_S) -> dict[str, tuple[str, ...]]:
-    """One FR24 call covering the region's bounding box; returns callsign → route tuple.
-
-    All flights FR24 sees in our area come back in a single response, so
-    instead of paying one credit per callsign we pay one per snapshot. The
-    returned dict has the same 10-tuple shape that ``_apply_cached_route``
-    consumes; coordinates and city names come from the local airport DB
-    since FR24's live endpoint returns IATA codes only.
-    """
     api_key = os.environ.get("FR24_API_KEY")
     if not api_key:
-        return {}
-    url = f"{FR24_FLIGHT_POSITIONS_URL}?bounds={_region_bounds(region)}"
+        return None
+    url = f"{FR24_FLIGHT_POSITIONS_URL}?callsigns={urllib.parse.quote(callsign)}"
     try:
         data = _http_get_json(
             url,
@@ -348,40 +306,34 @@ def _fetch_fr24_routes(region: Region, timeout_s: float = DEFAULT_TIMEOUT_S) -> 
             },
         )
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError):
-        return {}
-    entries = data.get("data") if isinstance(data, dict) else None
-    if not isinstance(entries, list):
-        return {}
+        return None  # transient — don't poison the cache, retry next snapshot
 
-    routes: dict[str, tuple[str, ...]] = {}
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        callsign = str(entry.get("callsign") or "").strip().upper()
-        if not callsign:
-            continue
+    entries = data.get("data") if isinstance(data, dict) else None
+    entry = entries[0] if isinstance(entries, list) and entries and isinstance(entries[0], dict) else None
+    if entry:
         dep_iata = str(entry.get("orig_iata") or "").strip().upper()
         arr_iata = str(entry.get("dest_iata") or "").strip().upper()
-        if not dep_iata or not arr_iata:
-            continue
-        dep = airport_db.lookup(dep_iata)
-        arr = airport_db.lookup(arr_iata)
-        if dep is None or arr is None:
-            continue
-        airline_icao = str(entry.get("painted_as") or entry.get("operating_as") or "")
-        routes[callsign] = (
-            airline_icao,
-            "",  # FR24 live endpoint doesn't return airline display name
-            dep_iata,
-            dep.city,
-            arr_iata,
-            arr.city,
-            f"{dep.latitude:.6f}",
-            f"{dep.longitude:.6f}",
-            f"{arr.latitude:.6f}",
-            f"{arr.longitude:.6f}",
-        )
-    return routes
+        dep = airport_db.lookup(dep_iata) if dep_iata else None
+        arr = airport_db.lookup(arr_iata) if arr_iata else None
+        if dep is not None and arr is not None and dep_iata and arr_iata:
+            airline_icao = str(entry.get("painted_as") or entry.get("operating_as") or "")
+            tup: tuple[str, ...] = (
+                airline_icao,
+                "",  # FR24 live endpoint doesn't return airline display name
+                dep_iata,
+                dep.city,
+                arr_iata,
+                arr.city,
+                f"{dep.latitude:.6f}",
+                f"{dep.longitude:.6f}",
+                f"{arr.latitude:.6f}",
+                f"{arr.longitude:.6f}",
+            )
+            _known_routes[callsign] = tup
+            return tup
+
+    _negative_routes[callsign] = time.monotonic()
+    return None
 
 
 def _route_is_plausible(
@@ -611,29 +563,23 @@ def fetch_air_snapshot(
 
     cone_candidates.sort(key=lambda row: row[0])
 
-    # Refresh the FR24 route cache only when we'd actually learn something new
-    # (new callsign, periodic interval elapsed, or region bounds changed). Routes
-    # don't change for an in-flight aircraft, so most snapshots are pure
-    # ADSB.lol position updates with zero FR24 cost.
-    if enrich_route:
-        candidate_callsigns: set[str] = set()
-        for distance, entry, *_ in cone_candidates:
-            if distance > region.radar_radius_nm:
-                continue
-            cs = _clean_callsign(entry.get("flight"))
-            if cs:
-                candidate_callsigns.add(cs.upper())
-        if candidate_callsigns:
-            _maybe_refresh_fr24_routes(region, candidate_callsigns, timeout_s=timeout_s)
-
+    # The display ever shows just the closest in-cone in-radar flight, so we
+    # only ever need a route for that one callsign. Per-callsign FR24 lookup
+    # returns 1 result = 1 credit; cache reuse means most snapshots are free.
     selected: Flight | None = None
     for distance_nm, entry, lat, lon, bearing in cone_candidates:
-        # Plane info is only shown when the aircraft is inside the radar's
-        # scope — i.e. close enough to be realistically visible from the
-        # window. Anything further is tracked in the snapshot (so it can still
-        # influence peripheral UI later) but doesn't get a hero card.
         if distance_nm > region.radar_radius_nm:
             break
+        callsign = _clean_callsign(entry.get("flight"))
+        if not callsign:
+            continue
+
+        fr24_routes: dict[str, tuple[str, ...]] = {}
+        if enrich_route:
+            route_tuple = _get_route_for(callsign, timeout_s=timeout_s)
+            if route_tuple is not None:
+                fr24_routes = {callsign.upper(): route_tuple}
+
         flight = _build_flight(
             entry,
             lat=lat,
@@ -641,7 +587,7 @@ def fetch_air_snapshot(
             distance_nm=distance_nm,
             bearing_from_viewer_deg=bearing,
             enrich_route=enrich_route,
-            fr24_routes=_known_routes,
+            fr24_routes=fr24_routes,
         )
         if flight is not None:
             selected = flight
