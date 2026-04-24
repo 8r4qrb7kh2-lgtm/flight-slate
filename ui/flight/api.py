@@ -13,11 +13,9 @@ stale data, callsign reuse, and ambiguous matches.
 
 from __future__ import annotations
 
-import functools
 import json
 import math
 import os
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -265,85 +263,80 @@ def _split_callsign(callsign: str) -> tuple[str | None, str | None]:
     return None, callsign
 
 
-_FR24_NEGATIVE_TTL_S = 60.0
-_FR24_NEG_CACHE_MAX = 1024
-# Successful lookups: cached forever (airports don't move).
-_fr24_positive_cache: dict[str, tuple[str, ...]] = {}
-# "No data" responses (200 OK with empty data array, or unrecognized fields):
-# cached short-term so FR24 can catch up if it just hadn't seen the flight yet.
-_fr24_negative_cache: dict[str, float] = {}
+def _region_bounds(region: Region) -> str:
+    """Bounding box around the region's fetch radius in FR24's NORTH,SOUTH,WEST,EAST format.
 
-
-def _cached_fr24_route(callsign: str) -> tuple[str, ...] | None:
-    """Flightradar24 callsign → route lookup with split positive/negative caching.
-
-    Hits the live flight-positions endpoint and pulls origin/destination
-    IATA codes. FR24 returns codes only, so we join against the local
-    OpenFlights airport database for coordinates (needed for the plausibility
-    check) and city names (for the footer).
-
-    Caching strategy:
-    * Successful lookups → ``_fr24_positive_cache``, kept indefinitely.
-    * "No data" responses → ``_fr24_negative_cache`` with a 60s TTL, so
-      callsigns FR24 hadn't seen yet get retried on subsequent snapshots.
-    * Transient errors (HTTP, timeout, JSON) → not cached, retried immediately.
+    A 10% buffer is added so flights right at the edge of our radar still
+    fall inside the FR24 query box.
     """
-    if callsign in _fr24_positive_cache:
-        return _fr24_positive_cache[callsign]
-    neg_ts = _fr24_negative_cache.get(callsign)
-    if neg_ts is not None and (time.monotonic() - neg_ts) < _FR24_NEGATIVE_TTL_S:
-        return None
+    lat_delta = (region.radius_nm * 1.1) / 60.0  # 1° lat ≈ 60 nm
+    lat_rad = math.radians(region.center_lat)
+    cos_lat = max(0.01, math.cos(lat_rad))  # guard near the poles
+    lon_delta = lat_delta / cos_lat
+    north = region.center_lat + lat_delta
+    south = region.center_lat - lat_delta
+    west = region.center_lon - lon_delta
+    east = region.center_lon + lon_delta
+    return f"{north:.4f},{south:.4f},{west:.4f},{east:.4f}"
 
+
+def _fetch_fr24_routes(region: Region, timeout_s: float = DEFAULT_TIMEOUT_S) -> dict[str, tuple[str, ...]]:
+    """One FR24 call covering the region's bounding box; returns callsign → route tuple.
+
+    All flights FR24 sees in our area come back in a single response, so
+    instead of paying one credit per callsign we pay one per snapshot. The
+    returned dict has the same 10-tuple shape that ``_apply_cached_route``
+    consumes; coordinates and city names come from the local airport DB
+    since FR24's live endpoint returns IATA codes only.
+    """
     api_key = os.environ.get("FR24_API_KEY")
     if not api_key:
-        return None
-    url = f"{FR24_FLIGHT_POSITIONS_URL}?callsigns={urllib.parse.quote(callsign)}"
+        return {}
+    url = f"{FR24_FLIGHT_POSITIONS_URL}?bounds={_region_bounds(region)}"
     try:
         data = _http_get_json(
             url,
+            timeout_s=timeout_s,
             extra_headers={
                 "Accept-Version": "v1",
                 "Authorization": f"Bearer {api_key}",
             },
         )
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError):
-        # Transient — don't poison the cache.
-        return None
-
+        return {}
     entries = data.get("data") if isinstance(data, dict) else None
-    entry = entries[0] if isinstance(entries, list) and entries and isinstance(entries[0], dict) else None
-    dep_iata = str(entry.get("orig_iata") or "").strip().upper() if entry else ""
-    arr_iata = str(entry.get("dest_iata") or "").strip().upper() if entry else ""
-    dep = airport_db.lookup(dep_iata) if dep_iata else None
-    arr = airport_db.lookup(arr_iata) if arr_iata else None
-    if entry is None or not dep_iata or not arr_iata or dep is None or arr is None:
-        _record_fr24_negative(callsign)
-        return None
+    if not isinstance(entries, list):
+        return {}
 
-    airline_icao = str(entry.get("painted_as") or entry.get("operating_as") or "")
-    result = (
-        airline_icao,
-        "",  # FR24 live endpoint doesn't return airline display name
-        dep_iata,
-        dep.city,
-        arr_iata,
-        arr.city,
-        f"{dep.latitude:.6f}",
-        f"{dep.longitude:.6f}",
-        f"{arr.latitude:.6f}",
-        f"{arr.longitude:.6f}",
-    )
-    _fr24_positive_cache[callsign] = result
-    return result
-
-
-def _record_fr24_negative(callsign: str) -> None:
-    if len(_fr24_negative_cache) >= _FR24_NEG_CACHE_MAX:
-        # Drop the oldest 25% to keep growth bounded.
-        cutoff = sorted(_fr24_negative_cache.items(), key=lambda kv: kv[1])
-        for old_cs, _ in cutoff[: _FR24_NEG_CACHE_MAX // 4]:
-            _fr24_negative_cache.pop(old_cs, None)
-    _fr24_negative_cache[callsign] = time.monotonic()
+    routes: dict[str, tuple[str, ...]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        callsign = str(entry.get("callsign") or "").strip().upper()
+        if not callsign:
+            continue
+        dep_iata = str(entry.get("orig_iata") or "").strip().upper()
+        arr_iata = str(entry.get("dest_iata") or "").strip().upper()
+        if not dep_iata or not arr_iata:
+            continue
+        dep = airport_db.lookup(dep_iata)
+        arr = airport_db.lookup(arr_iata)
+        if dep is None or arr is None:
+            continue
+        airline_icao = str(entry.get("painted_as") or entry.get("operating_as") or "")
+        routes[callsign] = (
+            airline_icao,
+            "",  # FR24 live endpoint doesn't return airline display name
+            dep_iata,
+            dep.city,
+            arr_iata,
+            arr.city,
+            f"{dep.latitude:.6f}",
+            f"{dep.longitude:.6f}",
+            f"{arr.latitude:.6f}",
+            f"{arr.longitude:.6f}",
+        )
+    return routes
 
 
 def _route_is_plausible(
@@ -426,6 +419,7 @@ def _build_flight(
     distance_nm: float,
     bearing_from_viewer_deg: float,
     enrich_route: bool,
+    fr24_routes: dict[str, tuple[str, ...]] | None = None,
 ) -> Flight | None:
     callsign = _clean_callsign(ac.get("flight"))
     if not callsign:
@@ -440,8 +434,8 @@ def _build_flight(
     track_raw = ac.get("track")
     track_deg = float(track_raw) if isinstance(track_raw, (int, float)) else None
 
-    if enrich_route:
-        cached = _cached_fr24_route(callsign)
+    if enrich_route and fr24_routes:
+        cached = fr24_routes.get(callsign.upper())
         if cached is not None:
             if cached[0] and not airline_icao:
                 airline_icao = cached[0]
@@ -571,6 +565,13 @@ def fetch_air_snapshot(
             cone_candidates.append((distance_nm, entry, lat, lon, bearing))
 
     cone_candidates.sort(key=lambda row: row[0])
+
+    # One FR24 call per snapshot covering the whole region — all callsigns we
+    # might display get pre-resolved; per-flight lookups become local dict hits.
+    fr24_routes: dict[str, tuple[str, ...]] = {}
+    if enrich_route and any(distance <= region.radar_radius_nm for distance, *_ in cone_candidates):
+        fr24_routes = _fetch_fr24_routes(region, timeout_s=timeout_s)
+
     selected: Flight | None = None
     for distance_nm, entry, lat, lon, bearing in cone_candidates:
         # Plane info is only shown when the aircraft is inside the radar's
@@ -586,6 +587,7 @@ def fetch_air_snapshot(
             distance_nm=distance_nm,
             bearing_from_viewer_deg=bearing,
             enrich_route=enrich_route,
+            fr24_routes=fr24_routes,
         )
         if flight is not None:
             selected = flight
