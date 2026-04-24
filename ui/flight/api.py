@@ -1,15 +1,14 @@
 """Live flight data fetchers.
 
-Uses two free, no-auth endpoints:
-
 * ADSB.lol — positions, speed, altitude, aircraft type for everything within
-  a radius of a point. Results are sorted closest first.
-* adsbdb.com — origin / destination airport and airline lookup from a callsign.
+  a radius of a point. Results are sorted closest first. Free, no auth.
+* Flightradar24 API — origin/destination airport lookup by callsign. Requires
+  ``FR24_API_KEY``. Returns IATA codes only; we join against the local
+  OpenFlights airport database for coordinates and city names.
 
-Route lookups from adsbdb are best-effort: the database stores the *scheduled*
-route for a callsign, and airlines reuse flight numbers. We guard against that
-by only trusting the route if the aircraft's current position is roughly
-between the origin and destination (plausibility check).
+Even with FR24's authoritative data, we still apply the plausibility and
+track-direction checks before trusting the route — defense in depth against
+stale data, callsign reuse, and ambiguous matches.
 """
 
 from __future__ import annotations
@@ -28,8 +27,7 @@ from ui.flight import airports as airport_db
 
 
 ADSB_LOL_URL = "https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{dist}"
-ADSBDB_CALLSIGN_URL = "https://api.adsbdb.com/v0/callsign/{callsign}"
-AIRLABS_FLIGHT_URL = "https://airlabs.co/api/v9/flight"
+FR24_FLIGHT_POSITIONS_URL = "https://fr24api.flightradar24.com/api/live/flight-positions/full"
 
 DEFAULT_TIMEOUT_S = 8.0
 
@@ -183,11 +181,15 @@ class AirSnapshot:
     pings: tuple[AircraftPing, ...] = field(default_factory=tuple)
 
 
-def _http_get_json(url: str, timeout_s: float = DEFAULT_TIMEOUT_S) -> dict[str, Any]:
-    request = urllib.request.Request(
-        url,
-        headers={"User-Agent": "flight-slate/0.1", "Accept": "application/json"},
-    )
+def _http_get_json(
+    url: str,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    extra_headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    headers = {"User-Agent": "flight-slate/0.1", "Accept": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
+    request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=timeout_s) as response:
         payload = response.read()
     return json.loads(payload.decode("utf-8"))
@@ -262,74 +264,39 @@ def _split_callsign(callsign: str) -> tuple[str | None, str | None]:
     return None, callsign
 
 
-@functools.lru_cache(maxsize=256)
-def _cached_route(callsign: str) -> tuple[str, ...] | None:
-    """Cached callsign → route lookup.
-
-    Flat tuple so it's hashable: (airline_icao, airline_name, origin_iata,
-    origin_name, dest_iata, dest_name, origin_lat, origin_lon, dest_lat,
-    dest_lon). Empty strings for missing values.
-    """
-    url = ADSBDB_CALLSIGN_URL.format(callsign=urllib.parse.quote(callsign))
-    try:
-        data = _http_get_json(url, timeout_s=DEFAULT_TIMEOUT_S)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError):
-        return None
-    response = data.get("response") if isinstance(data, dict) else None
-    if not isinstance(response, dict):
-        return None
-    flightroute = response.get("flightroute")
-    if not isinstance(flightroute, dict):
-        return None
-
-    airline = flightroute.get("airline") or {}
-    origin = flightroute.get("origin") or {}
-    destination = flightroute.get("destination") or {}
-
-    def _coord(obj: Any) -> str:
-        if isinstance(obj, (int, float)):
-            return f"{float(obj):.6f}"
-        return ""
-
-    return (
-        str(airline.get("icao") or "") if isinstance(airline, dict) else "",
-        str(airline.get("name") or "") if isinstance(airline, dict) else "",
-        str(origin.get("iata_code") or "") if isinstance(origin, dict) else "",
-        str(origin.get("municipality") or origin.get("name") or "") if isinstance(origin, dict) else "",
-        str(destination.get("iata_code") or "") if isinstance(destination, dict) else "",
-        str(destination.get("municipality") or destination.get("name") or "") if isinstance(destination, dict) else "",
-        _coord(origin.get("latitude")) if isinstance(origin, dict) else "",
-        _coord(origin.get("longitude")) if isinstance(origin, dict) else "",
-        _coord(destination.get("latitude")) if isinstance(destination, dict) else "",
-        _coord(destination.get("longitude")) if isinstance(destination, dict) else "",
-    )
-
-
 @functools.lru_cache(maxsize=512)
-def _cached_airlabs_route(callsign: str) -> tuple[str, ...] | None:
-    """AirLabs callsign → route fallback.
+def _cached_fr24_route(callsign: str) -> tuple[str, ...] | None:
+    """Flightradar24 callsign → route lookup.
 
-    AirLabs returns IATA codes only, so we join against the local OpenFlights
-    airport database to supply coordinates (for the plausibility check) and
-    city names (for display). Returns the same 10-tuple shape as
-    ``_cached_route`` or ``None`` if no key is configured / the lookup fails.
+    Hits the live flight-positions endpoint and pulls origin/destination
+    IATA codes for the callsign currently airborne. FR24 returns codes only,
+    so we join against the local OpenFlights airport database to supply
+    coordinates (needed for the plausibility check) and city names (for the
+    footer). Returns a 10-tuple matching the shape consumed by
+    ``_apply_cached_route`` or ``None`` if no key is set / the lookup fails.
     """
-    api_key = os.environ.get("AIRLABS_API_KEY")
+    api_key = os.environ.get("FR24_API_KEY")
     if not api_key:
         return None
-    url = (
-        f"{AIRLABS_FLIGHT_URL}?flight_icao={urllib.parse.quote(callsign)}"
-        f"&api_key={urllib.parse.quote(api_key)}"
-    )
+    url = f"{FR24_FLIGHT_POSITIONS_URL}?callsigns={urllib.parse.quote(callsign)}"
     try:
-        data = _http_get_json(url, timeout_s=DEFAULT_TIMEOUT_S)
+        data = _http_get_json(
+            url,
+            extra_headers={
+                "Accept-Version": "v1",
+                "Authorization": f"Bearer {api_key}",
+            },
+        )
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError):
         return None
-    response = data.get("response") if isinstance(data, dict) else None
-    if not isinstance(response, dict):
+    entries = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(entries, list) or not entries:
         return None
-    dep_iata = str(response.get("dep_iata") or "").strip().upper()
-    arr_iata = str(response.get("arr_iata") or "").strip().upper()
+    entry = entries[0]
+    if not isinstance(entry, dict):
+        return None
+    dep_iata = str(entry.get("orig_iata") or "").strip().upper()
+    arr_iata = str(entry.get("dest_iata") or "").strip().upper()
     if not dep_iata or not arr_iata:
         return None
     dep = airport_db.lookup(dep_iata)
@@ -337,10 +304,10 @@ def _cached_airlabs_route(callsign: str) -> tuple[str, ...] | None:
     if dep is None or arr is None:
         # Can't plausibility-check or label without airport data — skip.
         return None
-    airline_icao = str(response.get("airline_icao") or "")
+    airline_icao = str(entry.get("painted_as") or entry.get("operating_as") or "")
     return (
         airline_icao,
-        "",  # AirLabs /flight endpoint doesn't return airline name
+        "",  # FR24 live endpoint doesn't return airline display name
         dep_iata,
         dep.city,
         arr_iata,
@@ -447,28 +414,14 @@ def _build_flight(
     track_deg = float(track_raw) if isinstance(track_raw, (int, float)) else None
 
     if enrich_route:
-        # Primary: adsbdb (no auth, no rate limit, rich data).
-        cached = _cached_route(callsign)
+        cached = _cached_fr24_route(callsign)
         if cached is not None:
-            if cached[0]:
+            if cached[0] and not airline_icao:
                 airline_icao = cached[0]
-            if cached[1]:
-                airline_name = cached[1]
             resolved = _apply_cached_route(cached, lat, lon, track_deg)
             if resolved is not None:
                 origin_iata, origin_name, destination_iata, destination_name = resolved
                 route_verified = True
-
-        # Fallback: AirLabs (requires AIRLABS_API_KEY; runs only on adsbdb miss).
-        if not route_verified:
-            cached = _cached_airlabs_route(callsign)
-            if cached is not None:
-                if cached[0] and not airline_icao:
-                    airline_icao = cached[0]
-                resolved = _apply_cached_route(cached, lat, lon, track_deg)
-                if resolved is not None:
-                    origin_iata, origin_name, destination_iata, destination_name = resolved
-                    route_verified = True
 
     airline_icao, airline_name = _apply_true_airline(airline_icao, airline_name)
 
