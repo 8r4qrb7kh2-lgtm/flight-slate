@@ -29,6 +29,7 @@ iOS Shortcut wiring:
 from __future__ import annotations
 
 import http.server
+import re
 import socketserver
 import threading
 import time
@@ -38,6 +39,33 @@ from ui.flight import weather
 
 
 _DEFAULT_PORT = 8080
+_NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _parse_to_fahrenheit(raw: str) -> float | None:
+    """Extract a temperature from a permissive string; convert C→F if needed.
+
+    Accepts plain numbers ("72", "72.4") and Measurement strings as iOS
+    Shortcuts renders them ("72° F", "22°C", "22 C", "295.15 K"). When the
+    string contains a 'C' but no 'F', the number is treated as Celsius and
+    converted; otherwise it's assumed to already be Fahrenheit (the param
+    is named ``f``). Returns None if no number is found.
+    """
+    if not raw:
+        return None
+    match = _NUMBER_RE.search(raw)
+    if match is None:
+        return None
+    try:
+        value = float(match.group(0))
+    except ValueError:
+        return None
+    upper = raw.upper()
+    has_f = "F" in upper
+    has_c = "C" in upper
+    if has_c and not has_f:
+        value = value * 9.0 / 5.0 + 32.0
+    return value
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -71,11 +99,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             body = self.rfile.read(length).decode("utf-8", errors="replace") if length > 0 else ""
             params = urllib.parse.parse_qs(body)
 
-        raw = (params.get("f") or [""])[0].strip()
-        try:
-            temp_f = float(raw)
-        except ValueError:
-            self._reply(400, "need ?f=<fahrenheit>")
+        raw = (params.get("f") or [""])[0]
+        temp_f = _parse_to_fahrenheit(raw)
+        if temp_f is None:
+            self._reply(400, "need ?f=<temperature> (e.g. 72, 72F, 22C)")
             return
 
         weather.set_inside_temp_f(temp_f)
