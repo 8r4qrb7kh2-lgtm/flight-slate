@@ -12,7 +12,8 @@ ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets" / "airlines"
 
 
 # ICAO airline code → logo filename (under assets/airlines/).
-# Covers every logo currently shipped with the project.
+# Pseudo-ICAOs (CCF, UNH, MHL, LFT) cover non-airline operators identified
+# by N-number vanity suffix (e.g. medical helicopters).
 _AIRLINE_LOGOS: dict[str, str] = {
     "ACA": "airlines-air-canada-48.png",
     "ASA": "airlines-alaskan-48.png",
@@ -31,6 +32,11 @@ _AIRLINE_LOGOS: dict[str, str] = {
     "NKS": "airlines-spirit-48.png",
     "UAL": "airlines-united-48.png",
     "UPS": "airlines-ups-48.png",
+    # Medical / air-ambulance operators in the Cleveland area.
+    "CCF": "operators-cleveland-clinic-48.png",
+    "UNH": "operators-university-hospitals-48.png",
+    "MHL": "operators-metrohealth-48.png",
+    "LFT": "operators-lifeflight-48.png",
 }
 
 
@@ -53,15 +59,48 @@ _IATA_TO_ICAO: dict[str, str] = {
 }
 
 
+# Vanity suffixes on N-number callsigns that identify non-airline operators.
+# Matched against the trailing letters of e.g. "N431CC" → suffix "CC".
+# Helicopters often broadcast their tail number as the callsign and use
+# operator-meaningful letters at the end.
+_N_NUMBER_OPERATOR_SUFFIXES: dict[str, str] = {
+    "CC": "CCF",  # Cleveland Clinic Critical Care Transport
+    "UH": "UNH",  # University Hospitals
+    "MH": "MHL",  # MetroHealth (Metro Life Flight)
+    "LF": "LFT",  # LifeFlight
+}
+
+
+def _n_number_suffix_match(callsign: str) -> str | None:
+    """Match an N-number callsign to a known operator by its 2-letter suffix.
+
+    Returns the pseudo-ICAO if the callsign looks like 'N' + digits + 2 letters
+    and the suffix is in our table; otherwise None. Prevents bogus matches on
+    non-N-number alpha strings.
+    """
+    if not callsign.startswith("N") or len(callsign) < 4:
+        return None
+    suffix = callsign[-2:]
+    if not suffix.isalpha():
+        return None
+    middle = callsign[1:-2]
+    if not middle or not middle.isdigit():
+        return None
+    return _N_NUMBER_OPERATOR_SUFFIXES.get(suffix)
+
+
 def resolve_airline_from_callsign(callsign: str | None) -> str | None:
-    """Return a 3-letter ICAO code from a callsign's prefix, or None if unknown."""
+    """Return a 3-letter ICAO (real or pseudo) for the callsign, or None."""
     if not callsign:
         return None
-    head = callsign[:3].upper()
+    cs = callsign.strip().upper()
+    head = cs[:3]
     if head.isalpha():
         return head
-    iata = callsign[:2].upper()
-    return _IATA_TO_ICAO.get(iata)
+    iata = cs[:2]
+    if iata in _IATA_TO_ICAO:
+        return _IATA_TO_ICAO[iata]
+    return _n_number_suffix_match(cs)
 
 
 @functools.lru_cache(maxsize=64)

@@ -521,6 +521,12 @@ def _build_flight(
                 route_verified = True
                 dest_coords = _dest_coords_from_cached(cached)
 
+    if airline_icao is None:
+        # Catches non-airline operators (medical helicopters etc.) that use an
+        # N-number callsign with an operator-meaningful suffix.
+        from ui.flight.airlines import resolve_airline_from_callsign as _resolve
+        airline_icao = _resolve(callsign)
+
     airline_icao, airline_name = _apply_true_airline(airline_icao, airline_name)
 
     altitude_raw = ac.get("alt_geom")
