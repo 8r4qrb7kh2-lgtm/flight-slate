@@ -17,15 +17,19 @@ from __future__ import annotations
 import functools
 import json
 import math
+import os
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from ui.flight import airports as airport_db
+
 
 ADSB_LOL_URL = "https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{dist}"
 ADSBDB_CALLSIGN_URL = "https://api.adsbdb.com/v0/callsign/{callsign}"
+AIRLABS_FLIGHT_URL = "https://airlabs.co/api/v9/flight"
 
 DEFAULT_TIMEOUT_S = 8.0
 
@@ -296,6 +300,53 @@ def _cached_route(callsign: str) -> tuple[str, ...] | None:
     )
 
 
+@functools.lru_cache(maxsize=512)
+def _cached_airlabs_route(callsign: str) -> tuple[str, ...] | None:
+    """AirLabs callsign → route fallback.
+
+    AirLabs returns IATA codes only, so we join against the local OpenFlights
+    airport database to supply coordinates (for the plausibility check) and
+    city names (for display). Returns the same 10-tuple shape as
+    ``_cached_route`` or ``None`` if no key is configured / the lookup fails.
+    """
+    api_key = os.environ.get("AIRLABS_API_KEY")
+    if not api_key:
+        return None
+    url = (
+        f"{AIRLABS_FLIGHT_URL}?flight_icao={urllib.parse.quote(callsign)}"
+        f"&api_key={urllib.parse.quote(api_key)}"
+    )
+    try:
+        data = _http_get_json(url, timeout_s=DEFAULT_TIMEOUT_S)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError):
+        return None
+    response = data.get("response") if isinstance(data, dict) else None
+    if not isinstance(response, dict):
+        return None
+    dep_iata = str(response.get("dep_iata") or "").strip().upper()
+    arr_iata = str(response.get("arr_iata") or "").strip().upper()
+    if not dep_iata or not arr_iata:
+        return None
+    dep = airport_db.lookup(dep_iata)
+    arr = airport_db.lookup(arr_iata)
+    if dep is None or arr is None:
+        # Can't plausibility-check or label without airport data — skip.
+        return None
+    airline_icao = str(response.get("airline_icao") or "")
+    return (
+        airline_icao,
+        "",  # AirLabs /flight endpoint doesn't return airline name
+        dep_iata,
+        dep.city,
+        arr_iata,
+        arr.city,
+        f"{dep.latitude:.6f}",
+        f"{dep.longitude:.6f}",
+        f"{arr.latitude:.6f}",
+        f"{arr.longitude:.6f}",
+    )
+
+
 def _route_is_plausible(
     flight_lat: float,
     flight_lon: float,
@@ -312,6 +363,43 @@ def _route_is_plausible(
     )
     allowed = direct * (1.0 + ROUTE_PLAUSIBILITY_FRACTION) + ROUTE_PLAUSIBILITY_FIXED_NM
     return via_flight <= allowed
+
+
+def _apply_cached_route(
+    cached: tuple[str, ...],
+    flight_lat: float,
+    flight_lon: float,
+) -> tuple[str, str | None, str, str | None] | None:
+    """Validate a cached route tuple against the current aircraft position.
+
+    Returns ``(origin_iata, origin_name, destination_iata, destination_name)``
+    when the route is present and plausible; ``None`` when fields are missing,
+    coordinates don't parse, or the aircraft is clearly off-route.
+    """
+    (
+        _airline_icao,
+        _airline_name,
+        o_iata,
+        o_name,
+        d_iata,
+        d_name,
+        o_lat_s,
+        o_lon_s,
+        d_lat_s,
+        d_lon_s,
+    ) = cached
+    if not (o_iata and d_iata and o_lat_s and o_lon_s and d_lat_s and d_lon_s):
+        return None
+    try:
+        o_lat = float(o_lat_s)
+        o_lon = float(o_lon_s)
+        d_lat = float(d_lat_s)
+        d_lon = float(d_lon_s)
+    except ValueError:
+        return None
+    if not _route_is_plausible(flight_lat, flight_lon, o_lat, o_lon, d_lat, d_lon):
+        return None
+    return (o_iata, o_name or None, d_iata, d_name or None)
 
 
 def _apply_true_airline(airline_icao: str | None, airline_name: str | None) -> tuple[str | None, str | None]:
@@ -341,38 +429,27 @@ def _build_flight(
     route_verified = False
 
     if enrich_route:
+        # Primary: adsbdb (no auth, no rate limit, rich data).
         cached = _cached_route(callsign)
         if cached is not None:
-            (
-                route_airline_icao,
-                route_airline_name,
-                o_iata,
-                o_name,
-                d_iata,
-                d_name,
-                o_lat_s,
-                o_lon_s,
-                d_lat_s,
-                d_lon_s,
-            ) = cached
-            if route_airline_icao:
-                airline_icao = route_airline_icao
-            if route_airline_name:
-                airline_name = route_airline_name
-            if o_iata and d_iata and o_lat_s and o_lon_s and d_lat_s and d_lon_s:
-                try:
-                    o_lat = float(o_lat_s)
-                    o_lon = float(o_lon_s)
-                    d_lat = float(d_lat_s)
-                    d_lon = float(d_lon_s)
-                except ValueError:
-                    o_lat = o_lon = d_lat = d_lon = 0.0
-                    o_iata = d_iata = ""
-                if o_iata and d_iata and _route_is_plausible(lat, lon, o_lat, o_lon, d_lat, d_lon):
-                    origin_iata = o_iata
-                    origin_name = o_name or None
-                    destination_iata = d_iata
-                    destination_name = d_name or None
+            if cached[0]:
+                airline_icao = cached[0]
+            if cached[1]:
+                airline_name = cached[1]
+            resolved = _apply_cached_route(cached, lat, lon)
+            if resolved is not None:
+                origin_iata, origin_name, destination_iata, destination_name = resolved
+                route_verified = True
+
+        # Fallback: AirLabs (requires AIRLABS_API_KEY; runs only on adsbdb miss).
+        if not route_verified:
+            cached = _cached_airlabs_route(callsign)
+            if cached is not None:
+                if cached[0] and not airline_icao:
+                    airline_icao = cached[0]
+                resolved = _apply_cached_route(cached, lat, lon)
+                if resolved is not None:
+                    origin_iata, origin_name, destination_iata, destination_name = resolved
                     route_verified = True
 
     airline_icao, airline_name = _apply_true_airline(airline_icao, airline_name)
