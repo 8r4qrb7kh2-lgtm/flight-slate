@@ -340,22 +340,30 @@ def _get_route_for(
     entry = min(candidates, key=_entry_distance_nm) if candidates else None
     if entry:
         dep_iata = str(entry.get("orig_iata") or "").strip().upper()
+        dep_icao = str(entry.get("orig_icao") or "").strip().upper()
         arr_iata = str(entry.get("dest_iata") or "").strip().upper()
-        dep = airport_db.lookup(dep_iata) if dep_iata else None
-        arr = airport_db.lookup(arr_iata) if arr_iata else None
-        if dep is not None and arr is not None and dep_iata and arr_iata:
+        arr_icao = str(entry.get("dest_icao") or "").strip().upper()
+        # IATA first, ICAO as fallback for fields without an IATA code (KTTF
+        # Custer, KEFT Monroe, lots of small/private airports). FR24 may also
+        # put a synthetic 3-letter code in `orig_iata` (e.g. "QQM") that we
+        # can't look up but is what FR24 displays — keep it for the footer.
+        dep = airport_db.lookup(dep_iata) or airport_db.lookup_icao(dep_icao)
+        arr = airport_db.lookup(arr_iata) or airport_db.lookup_icao(arr_icao)
+        dep_display = dep_iata or dep_icao
+        arr_display = arr_iata or arr_icao
+        if dep_display and arr_display:
             airline_icao = str(entry.get("painted_as") or entry.get("operating_as") or "")
             tup: tuple[str, ...] = (
                 airline_icao,
                 "",  # FR24 live endpoint doesn't return airline display name
-                dep_iata,
-                dep.city,
-                arr_iata,
-                arr.city,
-                f"{dep.latitude:.6f}",
-                f"{dep.longitude:.6f}",
-                f"{arr.latitude:.6f}",
-                f"{arr.longitude:.6f}",
+                dep_display,
+                dep.city if dep else "",
+                arr_display,
+                arr.city if arr else "",
+                f"{dep.latitude:.6f}" if dep else "",
+                f"{dep.longitude:.6f}" if dep else "",
+                f"{arr.latitude:.6f}" if arr else "",
+                f"{arr.longitude:.6f}" if arr else "",
             )
             _known_routes[callsign] = (now, tup)
             return tup
@@ -414,17 +422,22 @@ def _apply_cached_route(
         d_lat_s,
         d_lon_s,
     ) = cached
-    if not (o_iata and d_iata and o_lat_s and o_lon_s and d_lat_s and d_lon_s):
+    if not (o_iata and d_iata):
         return None
-    try:
-        o_lat = float(o_lat_s)
-        o_lon = float(o_lon_s)
-        d_lat = float(d_lat_s)
-        d_lon = float(d_lon_s)
-    except ValueError:
-        return None
-    if not _route_is_plausible(flight_lat, flight_lon, o_lat, o_lon, d_lat, d_lon, track_deg):
-        return None
+    # Plausibility check requires coords for both endpoints. Small airports
+    # not in OpenFlights (Custer, etc.) come back with empty coord strings;
+    # show the route on faith there — callsign-keyed FR24 lookups already
+    # narrow to one specific aircraft via the closest-by-position picker.
+    if o_lat_s and o_lon_s and d_lat_s and d_lon_s:
+        try:
+            o_lat = float(o_lat_s)
+            o_lon = float(o_lon_s)
+            d_lat = float(d_lat_s)
+            d_lon = float(d_lon_s)
+        except ValueError:
+            return None
+        if not _route_is_plausible(flight_lat, flight_lon, o_lat, o_lon, d_lat, d_lon, track_deg):
+            return None
     return (o_iata, o_name or None, d_iata, d_name or None)
 
 
