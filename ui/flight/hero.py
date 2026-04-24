@@ -26,6 +26,7 @@ from ui.core.colors import Color, colors
 from ui.core.image_asset import ImageFrame, load_png_image_frame
 from ui.core.widgets import Column, Image, Panel, Row, Text, Widget
 from ui.fonts import FONT_3X5, FONT_4X6, FONT_5X7
+from ui.flight import weather
 from ui.flight.airlines import load_airline_logo, resolve_airline_from_callsign
 from ui.flight.api import AirSnapshot, Flight
 
@@ -646,37 +647,55 @@ def _build_dep_arr_row(flight: Flight | None) -> Widget:
     return Column(gap=0, sizes=[2, 7, 2], children=[_spacer(), line, _spacer()])
 
 
+def _format_temp_f(temp_f: float | None) -> str:
+    if temp_f is None:
+        return "--F"
+    return f"{int(round(temp_f))}F"
+
+
+@dataclass
+class _ScaledText(Widget):
+    """Single-line bitmap text rendered at integer ``scale``, center-aligned."""
+
+    text: str
+    font: object  # BitmapFont — kept loose to avoid import cycle in dataclass
+    color: Color
+    scale: int = 1
+
+    def draw(self, canvas: PixelCanvas, rect: Rect) -> None:
+        if rect.width <= 0 or rect.height <= 0 or not self.text:
+            return
+        line_width, line_height = self.font.measure(self.text, scale=self.scale)
+        draw_x = rect.x + max(0, (rect.width - line_width) // 2)
+        draw_y = rect.y + max(0, (rect.height - line_height) // 2)
+        with canvas.clip(rect):
+            self.font.render(canvas, draw_x, draw_y, self.text, self.color, scale=self.scale)
+
+
 def _build_waiting_left(snapshot: AirSnapshot) -> Widget:
     del snapshot  # No longer used; kept for signature parity.
+    now = time.localtime()
+    time_text = time.strftime("%H:%M:%S", now)
+    out_text = f"OUT {_format_temp_f(weather.outside_temp_f())}"
+    in_text = f"IN  {_format_temp_f(weather.inside_temp_f())}"
+
+    # 87×52 layout: 14-tall time at scale 2, two 7-tall temp lines, with
+    # spacers padding the column to fill vertically.
     return Panel(
-        padding=2,
+        padding=1,
         bg=colors.BLACK,
         border=None,
         child=Column(
-            gap=4,
-            sizes=[7, 7, 7],
+            gap=0,
+            sizes=[5, 14, 6, 7, 4, 7, 7],
             children=[
-                Text(
-                    text="FLIGHT SLATE",
-                    font=FONT_5X7,
-                    align="center",
-                    overflow="clip",
-                    color=COLOR_ACCENT,
-                ),
-                Text(
-                    text="LIVE RADAR",
-                    font=FONT_5X7,
-                    align="center",
-                    overflow="clip",
-                    color=COLOR_LABEL,
-                ),
-                Text(
-                    text="NO AIRCRAFT",
-                    font=FONT_5X7,
-                    align="center",
-                    overflow="clip",
-                    color=COLOR_STATUS_WARN,
-                ),
+                _spacer(),
+                _ScaledText(text=time_text, font=FONT_5X7, color=COLOR_VALUE, scale=2),
+                _spacer(),
+                _ScaledText(text=out_text, font=FONT_5X7, color=COLOR_ACCENT, scale=1),
+                _spacer(),
+                _ScaledText(text=in_text, font=FONT_5X7, color=COLOR_ACCENT, scale=1),
+                _spacer(),
             ],
         ),
     )

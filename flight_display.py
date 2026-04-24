@@ -37,6 +37,7 @@ from typing import Any
 from standard_led_matrix_interface import RGBMatrixOptions
 from ui import App
 from ui.flight import AirSnapshot, PingHistory, Region, build_flight_hero_page, fetch_air_snapshot
+from ui.flight import weather
 
 
 TARGET_REFRESH_HZ = 30
@@ -255,6 +256,7 @@ def main() -> int:
                 f"poll={poll_interval_s:.1f}s"
             )
 
+            weather.configure(state.region.center_lat, state.region.center_lon)
             _start_fetch(state, fetch_executor, enrich_route=enrich_route)
 
             frame_delay = 1.0 / max(1, app.options.limit_refresh_rate_hz)
