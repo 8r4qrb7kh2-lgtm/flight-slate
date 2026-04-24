@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -278,6 +279,50 @@ def _region_bounds(region: Region) -> str:
     west = region.center_lon - lon_delta
     east = region.center_lon + lon_delta
     return f"{north:.4f},{south:.4f},{west:.4f},{east:.4f}"
+
+
+# Long-lived cache of callsign → route tuple. Routes don't change for a given
+# in-flight aircraft, so keeping this between snapshots cuts FR24 calls drastically.
+_FR24_PERIODIC_INTERVAL_S = 300.0  # full refresh every 5 minutes
+_FR24_MIN_INTERVAL_S = 60.0        # but at most once per minute when a new callsign appears
+
+_known_routes: dict[str, tuple[str, ...]] = {}
+_last_fr24_fetch: float = 0.0
+_last_fr24_bounds: str | None = None
+
+
+def _maybe_refresh_fr24_routes(
+    region: Region,
+    candidate_callsigns: set[str],
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> None:
+    """Refresh ``_known_routes`` only when a refresh actually buys us something.
+
+    Triggers a fetch when (a) the bounds changed, (b) the periodic interval
+    elapsed, or (c) the snapshot has callsigns we don't have routes for AND
+    the short throttle elapsed. Otherwise reuses the dict from the last fetch.
+    """
+    global _last_fr24_fetch, _last_fr24_bounds, _known_routes
+
+    now = time.monotonic()
+    elapsed = now - _last_fr24_fetch
+    bounds = _region_bounds(region)
+
+    new_callsign_present = bool(candidate_callsigns - _known_routes.keys())
+    bounds_changed = bounds != _last_fr24_bounds
+    periodic_due = elapsed >= _FR24_PERIODIC_INTERVAL_S
+    on_demand_ok = new_callsign_present and elapsed >= _FR24_MIN_INTERVAL_S
+
+    if not (bounds_changed or periodic_due or on_demand_ok):
+        return
+
+    fresh = _fetch_fr24_routes(region, timeout_s=timeout_s)
+    if fresh:
+        # Full replacement: drops routes for flights FR24 no longer sees, picks
+        # up everything currently in the area.
+        _known_routes = fresh
+        _last_fr24_fetch = now
+        _last_fr24_bounds = bounds
 
 
 def _fetch_fr24_routes(region: Region, timeout_s: float = DEFAULT_TIMEOUT_S) -> dict[str, tuple[str, ...]]:
@@ -566,11 +611,20 @@ def fetch_air_snapshot(
 
     cone_candidates.sort(key=lambda row: row[0])
 
-    # One FR24 call per snapshot covering the whole region — all callsigns we
-    # might display get pre-resolved; per-flight lookups become local dict hits.
-    fr24_routes: dict[str, tuple[str, ...]] = {}
-    if enrich_route and any(distance <= region.radar_radius_nm for distance, *_ in cone_candidates):
-        fr24_routes = _fetch_fr24_routes(region, timeout_s=timeout_s)
+    # Refresh the FR24 route cache only when we'd actually learn something new
+    # (new callsign, periodic interval elapsed, or region bounds changed). Routes
+    # don't change for an in-flight aircraft, so most snapshots are pure
+    # ADSB.lol position updates with zero FR24 cost.
+    if enrich_route:
+        candidate_callsigns: set[str] = set()
+        for distance, entry, *_ in cone_candidates:
+            if distance > region.radar_radius_nm:
+                continue
+            cs = _clean_callsign(entry.get("flight"))
+            if cs:
+                candidate_callsigns.add(cs.upper())
+        if candidate_callsigns:
+            _maybe_refresh_fr24_routes(region, candidate_callsigns, timeout_s=timeout_s)
 
     selected: Flight | None = None
     for distance_nm, entry, lat, lon, bearing in cone_candidates:
@@ -587,7 +641,7 @@ def fetch_air_snapshot(
             distance_nm=distance_nm,
             bearing_from_viewer_deg=bearing,
             enrich_route=enrich_route,
-            fr24_routes=fr24_routes,
+            fr24_routes=_known_routes,
         )
         if flight is not None:
             selected = flight
