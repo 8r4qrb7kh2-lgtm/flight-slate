@@ -47,14 +47,16 @@ ROUTE_TRACK_ENDPOINT_EXEMPT_NM = 30.0
 
 # Wholly-owned regional carriers that always operate for a single major.
 # Maps operating airline ICAO → ticketed (true) airline ICAO.
-# Multi-carrier regionals (RPA/SKW/GJS) are intentionally omitted — we can't
-# reliably tell which major they're flying for from callsign alone.
+# Multi-carrier regionals (SKW/GJS) are still ambiguous from callsign alone.
+# RPA flies for AA, DL, and UA, but at CLE the bulk of RPA traffic is Delta
+# Connection; we'd rather show the Delta logo by default than nothing.
 TRUE_AIRLINE_OVERRIDES: dict[str, str] = {
     "EDV": "DAL",  # Endeavor Air → Delta Connection (wholly owned by Delta)
     "ENY": "AAL",  # Envoy Air → American Eagle (wholly owned by AA)
     "PDT": "AAL",  # Piedmont Airlines → American Eagle (wholly owned by AA)
     "JIA": "AAL",  # PSA Airlines → American Eagle (wholly owned by AA)
     "JZA": "ACA",  # Jazz Aviation → Air Canada Express
+    "RPA": "DAL",  # Republic Airways → Delta Connection (heuristic for CLE)
 }
 
 # Human-readable names paired with the overrides (for the airline_name field).
