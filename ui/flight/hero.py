@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import functools
 import math
+import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,7 @@ from ui.core.widgets import Column, Image, Panel, Row, Text, Widget
 from ui.fonts import FONT_3X5, FONT_4X6, FONT_5X7
 from ui.flight import weather
 from ui.flight.airlines import load_airline_logo, resolve_airline_from_callsign
+from ui.flight.fun_facts import ANIMAL_FUN_FACTS
 from ui.flight.api import AirSnapshot, Flight
 
 
@@ -701,6 +703,73 @@ def _build_waiting_left(snapshot: AirSnapshot) -> Widget:
     )
 
 
+_FACT_SCROLL_PX_PER_S = 18.0  # comfortable reading speed for FONT_4X6
+
+
+class _IdleFootState:
+    """Persistent state for the idle (no-flight) footer.
+
+    Tracks the previously-selected aircraft so we can pick a fresh fun
+    fact each time the display transitions from "have a hero flight" to
+    "no aircraft in cone". The first frame ever counts as a transition.
+    """
+
+    def __init__(self) -> None:
+        self.last_selected_icao: str | None = None
+        self.has_seen_first_frame: bool = False
+        self.current_fact: str = ""
+        self.fact_started_mono: float = 0.0
+
+
+_idle_foot = _IdleFootState()
+
+
+def _maybe_refresh_idle_fact(snapshot: AirSnapshot) -> None:
+    selected = snapshot.selected
+    selected_icao = selected.icao24 if selected is not None else None
+
+    became_idle = (
+        selected_icao is None
+        and (_idle_foot.last_selected_icao is not None or not _idle_foot.has_seen_first_frame)
+    )
+    if became_idle:
+        _idle_foot.current_fact = random.choice(ANIMAL_FUN_FACTS)
+        _idle_foot.fact_started_mono = time.monotonic()
+
+    _idle_foot.has_seen_first_frame = True
+    _idle_foot.last_selected_icao = selected_icao
+
+
+def _build_fun_fact_footer() -> Widget:
+    text = _idle_foot.current_fact
+    if not text:
+        return _spacer()
+    fact_width, _ = FONT_4X6.measure(text)
+    if fact_width <= DISPLAY_WIDTH:
+        line: Widget = Text(
+            text=text,
+            font=FONT_4X6,
+            align="center",
+            overflow="clip",
+            color=COLOR_LABEL,
+        )
+    else:
+        elapsed = max(0.0, time.monotonic() - _idle_foot.fact_started_mono)
+        # Negative offset shifts content left over time → text scrolls right-to-left.
+        scroll_offset = -elapsed * _FACT_SCROLL_PX_PER_S
+        line = Text(
+            text=text,
+            font=FONT_4X6,
+            align="left",
+            overflow="overflow",
+            overflow_offset=scroll_offset,
+            overflow_gap=20,
+            color=COLOR_LABEL,
+        )
+    # Center the 6-tall text within the 11-tall footer strip.
+    return Column(gap=0, sizes=[2, 7, 2], children=[_spacer(), line, _spacer()])
+
+
 def build_flight_hero_page(
     snapshot: AirSnapshot | None,
     *,
@@ -714,13 +783,20 @@ def build_flight_hero_page(
     if snapshot is None:
         snapshot = AirSnapshot(region=_Region(0.0, 0.0, 1.0))
 
+    _maybe_refresh_idle_fact(snapshot)
+
+    if snapshot.selected is None:
+        footer: Widget = _build_fun_fact_footer()
+    else:
+        footer = _build_dep_arr_row(snapshot.selected)
+
     body = Column(
         gap=0,
         sizes=[TOP_HEIGHT, DIVIDER_THICKNESS, POSITION_BAR_HEIGHT],
         children=[
             _build_top_row(snapshot),
             _divider(),
-            _build_dep_arr_row(snapshot.selected),
+            footer,
         ],
     )
     return Panel(padding=0, bg=colors.BLACK, border=None, child=body)

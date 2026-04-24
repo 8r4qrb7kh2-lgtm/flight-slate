@@ -37,7 +37,7 @@ from typing import Any
 from standard_led_matrix_interface import RGBMatrixOptions
 from ui import App
 from ui.flight import AirSnapshot, PingHistory, Region, build_flight_hero_page, fetch_air_snapshot
-from ui.flight import weather
+from ui.flight import inside_temp_server, weather
 
 
 TARGET_REFRESH_HZ = 30
@@ -257,6 +257,7 @@ def main() -> int:
             )
 
             weather.configure(state.region.center_lat, state.region.center_lon)
+            inside_temp_server.start(_read_int_env("FLIGHT_INSIDE_TEMP_PORT", 8080))
             _start_fetch(state, fetch_executor, enrich_route=enrich_route)
 
             frame_delay = 1.0 / max(1, app.options.limit_refresh_rate_hz)
