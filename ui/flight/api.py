@@ -17,6 +17,7 @@ import functools
 import json
 import math
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -264,17 +265,35 @@ def _split_callsign(callsign: str) -> tuple[str | None, str | None]:
     return None, callsign
 
 
-@functools.lru_cache(maxsize=512)
+_FR24_NEGATIVE_TTL_S = 60.0
+_FR24_NEG_CACHE_MAX = 1024
+# Successful lookups: cached forever (airports don't move).
+_fr24_positive_cache: dict[str, tuple[str, ...]] = {}
+# "No data" responses (200 OK with empty data array, or unrecognized fields):
+# cached short-term so FR24 can catch up if it just hadn't seen the flight yet.
+_fr24_negative_cache: dict[str, float] = {}
+
+
 def _cached_fr24_route(callsign: str) -> tuple[str, ...] | None:
-    """Flightradar24 callsign → route lookup.
+    """Flightradar24 callsign → route lookup with split positive/negative caching.
 
     Hits the live flight-positions endpoint and pulls origin/destination
-    IATA codes for the callsign currently airborne. FR24 returns codes only,
-    so we join against the local OpenFlights airport database to supply
-    coordinates (needed for the plausibility check) and city names (for the
-    footer). Returns a 10-tuple matching the shape consumed by
-    ``_apply_cached_route`` or ``None`` if no key is set / the lookup fails.
+    IATA codes. FR24 returns codes only, so we join against the local
+    OpenFlights airport database for coordinates (needed for the plausibility
+    check) and city names (for the footer).
+
+    Caching strategy:
+    * Successful lookups → ``_fr24_positive_cache``, kept indefinitely.
+    * "No data" responses → ``_fr24_negative_cache`` with a 60s TTL, so
+      callsigns FR24 hadn't seen yet get retried on subsequent snapshots.
+    * Transient errors (HTTP, timeout, JSON) → not cached, retried immediately.
     """
+    if callsign in _fr24_positive_cache:
+        return _fr24_positive_cache[callsign]
+    neg_ts = _fr24_negative_cache.get(callsign)
+    if neg_ts is not None and (time.monotonic() - neg_ts) < _FR24_NEGATIVE_TTL_S:
+        return None
+
     api_key = os.environ.get("FR24_API_KEY")
     if not api_key:
         return None
@@ -288,24 +307,21 @@ def _cached_fr24_route(callsign: str) -> tuple[str, ...] | None:
             },
         )
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError):
+        # Transient — don't poison the cache.
         return None
+
     entries = data.get("data") if isinstance(data, dict) else None
-    if not isinstance(entries, list) or not entries:
+    entry = entries[0] if isinstance(entries, list) and entries and isinstance(entries[0], dict) else None
+    dep_iata = str(entry.get("orig_iata") or "").strip().upper() if entry else ""
+    arr_iata = str(entry.get("dest_iata") or "").strip().upper() if entry else ""
+    dep = airport_db.lookup(dep_iata) if dep_iata else None
+    arr = airport_db.lookup(arr_iata) if arr_iata else None
+    if entry is None or not dep_iata or not arr_iata or dep is None or arr is None:
+        _record_fr24_negative(callsign)
         return None
-    entry = entries[0]
-    if not isinstance(entry, dict):
-        return None
-    dep_iata = str(entry.get("orig_iata") or "").strip().upper()
-    arr_iata = str(entry.get("dest_iata") or "").strip().upper()
-    if not dep_iata or not arr_iata:
-        return None
-    dep = airport_db.lookup(dep_iata)
-    arr = airport_db.lookup(arr_iata)
-    if dep is None or arr is None:
-        # Can't plausibility-check or label without airport data — skip.
-        return None
+
     airline_icao = str(entry.get("painted_as") or entry.get("operating_as") or "")
-    return (
+    result = (
         airline_icao,
         "",  # FR24 live endpoint doesn't return airline display name
         dep_iata,
@@ -317,6 +333,17 @@ def _cached_fr24_route(callsign: str) -> tuple[str, ...] | None:
         f"{arr.latitude:.6f}",
         f"{arr.longitude:.6f}",
     )
+    _fr24_positive_cache[callsign] = result
+    return result
+
+
+def _record_fr24_negative(callsign: str) -> None:
+    if len(_fr24_negative_cache) >= _FR24_NEG_CACHE_MAX:
+        # Drop the oldest 25% to keep growth bounded.
+        cutoff = sorted(_fr24_negative_cache.items(), key=lambda kv: kv[1])
+        for old_cs, _ in cutoff[: _FR24_NEG_CACHE_MAX // 4]:
+            _fr24_negative_cache.pop(old_cs, None)
+    _fr24_negative_cache[callsign] = time.monotonic()
 
 
 def _route_is_plausible(
