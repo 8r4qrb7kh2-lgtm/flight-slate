@@ -35,6 +35,11 @@ ICON_SPEED = "speed.png"
 ICON_ALTITUDE = "altitude.png"
 ICON_VERTICAL = "vertical-speed.png"
 
+# Drop the city name from the dep/arr footer when it matches HOME_CITY — the
+# board lives in Cleveland, so "Cleveland (CLE)" / "Cleveland (BKL)" is just
+# noise. Other cities keep the full "City (CODE)" form.
+HOME_CITY = "Cleveland"
+
 DISPLAY_WIDTH = 128
 DISPLAY_HEIGHT = 64
 LOGO_SIZE = 32
@@ -596,6 +601,11 @@ def _format_dep_arr_text(flight: Flight | None, max_width_px: int) -> str:
     o_city = (flight.origin_name or "").strip()
     d_code = (flight.destination_iata or "").strip()
     d_city = (flight.destination_name or "").strip()
+
+    if o_city.casefold() == HOME_CITY.casefold():
+        o_city = ""
+    if d_city.casefold() == HOME_CITY.casefold():
+        d_city = ""
 
     if not o_code and not d_code:
         return ""
