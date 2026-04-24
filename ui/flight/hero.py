@@ -55,12 +55,13 @@ HERO_ROW_HEIGHT = LOGO_SIZE  # 32
 STATS_ROW_HEIGHT = TOP_HEIGHT - HERO_ROW_HEIGHT - DIVIDER_THICKNESS  # 19
 DETAILS_WIDTH = LEFT_AREA_WIDTH - LOGO_SIZE - DIVIDER_THICKNESS  # 54
 
-# Stat cell widths in the stats row (sum must equal LEFT_AREA_WIDTH).
-_STAT_BASE = (LEFT_AREA_WIDTH - 2 * DIVIDER_THICKNESS) // 3
-STAT_CELL_WIDTHS: tuple[int, int, int] = (
+# Stat cell widths in the stats row — 4 evenly-sized cells (sum + 3 dividers = LEFT_AREA_WIDTH).
+_STAT_BASE = (LEFT_AREA_WIDTH - 3 * DIVIDER_THICKNESS) // 4
+STAT_CELL_WIDTHS: tuple[int, int, int, int] = (
     _STAT_BASE,
     _STAT_BASE,
-    LEFT_AREA_WIDTH - 2 * DIVIDER_THICKNESS - 2 * _STAT_BASE,
+    _STAT_BASE,
+    LEFT_AREA_WIDTH - 3 * DIVIDER_THICKNESS - 3 * _STAT_BASE,
 )
 
 COLOR_LABEL = colors.DIM_WHITE
@@ -214,30 +215,87 @@ def _aircraft_line(flight: Flight) -> str:
     return flight.icao24.upper() or ""
 
 
-def _build_stat_cell(icon: Widget, value: str) -> Widget:
-    # Cell height is 19. Keep internal padding so icons don't crowd dividers.
+def _build_stat_cell(label: str, value: str, *, label_color: Color = COLOR_ACCENT, value_color: Color = COLOR_VALUE) -> Widget:
+    """Compact stat cell: 1-char label + value, all in FONT_4X6, vertically centered.
+
+    The 4-cell stats row leaves ~21 px per cell, which is too tight for the old
+    icon+FONT_5X7 layout. Letter prefix in FONT_4X6 keeps the meaning clear at
+    a glance without burning pixels on icons.
+    """
+    label_w, _ = FONT_4X6.measure(label)
+    value_w, _ = FONT_4X6.measure(value)
+    # 1px gap between label and value reads better than flush.
     content_row = Row(
         gap=1,
-        sizes=[9, 19],
+        sizes=[label_w, value_w],
         children=[
-            icon,
-            Text(
-                text=value,
-                font=FONT_5X7,
-                align="left",
-                overflow="clip",
-                color=COLOR_VALUE,
-            ),
+            Text(text=label, font=FONT_4X6, align="left", overflow="clip", color=label_color),
+            Text(text=value, font=FONT_4X6, align="left", overflow="clip", color=value_color),
         ],
+    )
+    # Center the row's contents horizontally within the cell.
+    total = label_w + 1 + value_w
+    side_pad = max(0, (STAT_CELL_WIDTHS[0] - total) // 2)
+    centered = Row(
+        gap=0,
+        sizes=[side_pad, total],
+        children=[_spacer(), content_row],
     )
     return Column(
         gap=0,
-        sizes=[4, 11, 4],
-        children=[_spacer(), content_row, _spacer()],
+        sizes=[6, 6, 7],
+        children=[_spacer(), centered, _spacer()],
     )
 
 
+def _format_eta_or_delay(flight: Flight) -> tuple[str, str, Color]:
+    """Return (label, value, value_color) for the 4th stats cell.
+
+    Prefers showing schedule delay when both ETA and scheduled arrival are
+    known (color-coded red for late, green for early). Falls back to bare
+    "minutes until arrival" otherwise. "--" when nothing is computable.
+    """
+    eta_dt = _parse_iso_utc(flight.eta_utc)
+    sched_dt = _parse_iso_utc(flight.scheduled_arrival_utc)
+    if eta_dt is not None and sched_dt is not None:
+        delta_min = round((eta_dt - sched_dt).total_seconds() / 60.0)
+        if delta_min == 0:
+            return ("L", "OT", COLOR_VALUE)
+        capped = max(-99, min(99, delta_min))
+        sign = "+" if capped > 0 else "-"
+        text = f"{sign}{abs(capped):02d}"
+        # Tolerate ±5 min as "on time" coloring.
+        if delta_min > 5:
+            color: Color = (230, 70, 60)  # red
+        elif delta_min < -5:
+            color = (70, 220, 90)  # green
+        else:
+            color = COLOR_VALUE
+        return ("L", text, color)
+    if eta_dt is not None:
+        from datetime import datetime, timezone  # local import to avoid top-level churn
+        now = datetime.now(timezone.utc)
+        mins = round((eta_dt - now).total_seconds() / 60.0)
+        if mins < 0:
+            return ("E", "LD", COLOR_LABEL)  # already past ETA; "landed"
+        capped = min(99, max(0, mins))
+        return ("E", f"{capped:02d}", COLOR_ACCENT)
+    return ("E", "--", COLOR_LABEL)
+
+
+def _parse_iso_utc(value: str | None) -> "datetime | None":
+    """Parse 'YYYY-MM-DDTHH:MM:SSZ' to a UTC-aware datetime; None on failure."""
+    if not value:
+        return None
+    from datetime import datetime, timezone
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 def _build_stats_row(flight: Flight) -> Widget:
+    eta_label, eta_value, eta_color = _format_eta_or_delay(flight)
     return Row(
         gap=0,
         sizes=[
@@ -246,22 +304,17 @@ def _build_stats_row(flight: Flight) -> Widget:
             STAT_CELL_WIDTHS[1],
             DIVIDER_THICKNESS,
             STAT_CELL_WIDTHS[2],
+            DIVIDER_THICKNESS,
+            STAT_CELL_WIDTHS[3],
         ],
         children=[
-            _build_stat_cell(
-                _icon_or_letter(ICON_SPEED, "S", COLOR_ACCENT),
-                _format_ground_speed(flight.ground_speed_kt),
-            ),
+            _build_stat_cell("S", _format_ground_speed(flight.ground_speed_kt)),
             _divider(),
-            _build_stat_cell(
-                _icon_or_letter(ICON_ALTITUDE, "A", COLOR_ACCENT),
-                _format_altitude(flight.altitude_ft),
-            ),
+            _build_stat_cell("A", _format_altitude(flight.altitude_ft)),
             _divider(),
-            _build_stat_cell(
-                _icon_or_letter(ICON_VERTICAL, "V", COLOR_ACCENT),
-                _format_vertical_rate(flight.vertical_rate_fpm),
-            ),
+            _build_stat_cell("V", _format_vertical_rate(flight.vertical_rate_fpm)),
+            _divider(),
+            _build_stat_cell(eta_label, eta_value, value_color=eta_color),
         ],
     )
 

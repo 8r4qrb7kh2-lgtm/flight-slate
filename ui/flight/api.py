@@ -23,7 +23,9 @@ import urllib.request
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from ui.flight import airports as airport_db
+from datetime import datetime, timedelta, timezone
+
+from ui.flight import airlabs, airports as airport_db
 
 
 ADSB_LOL_URL = "https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{dist}"
@@ -115,6 +117,9 @@ class Flight:
     bearing_deg: float
     on_ground: bool
     route_verified: bool
+    # ISO-8601 UTC strings; None when the data source didn't supply them.
+    eta_utc: str | None = None  # FR24 estimated time of arrival
+    scheduled_arrival_utc: str | None = None  # AirLabs scheduled arrival
 
 
 @dataclass(frozen=True)
@@ -452,6 +457,36 @@ def _apply_true_airline(airline_icao: str | None, airline_name: str | None) -> t
     return override, TRUE_AIRLINE_NAMES.get(override) or airline_name
 
 
+def _dest_coords_from_cached(cached: tuple[str, ...]) -> tuple[float, float] | None:
+    """Pull destination lat/lon from a route tuple, or None if unparseable."""
+    try:
+        d_lat = float(cached[8])
+        d_lon = float(cached[9])
+    except (IndexError, ValueError):
+        return None
+    return d_lat, d_lon
+
+
+def _compute_eta_utc(
+    flight_lat: float,
+    flight_lon: float,
+    ground_speed_kt: float | None,
+    dest_coords: tuple[float, float] | None,
+) -> str | None:
+    """Local ETA estimate: now + (great-circle distance to destination / speed).
+
+    Coarse — assumes the plane keeps current speed and goes direct. Real ETAs
+    differ by approach procedures, headwinds, vectoring. Good enough for a
+    one-line "X min away" indicator on the display, and avoids burning an
+    extra FR24 credit per snapshot to read FR24's own ETA field.
+    """
+    if dest_coords is None or ground_speed_kt is None or ground_speed_kt < 30.0:
+        return None
+    dist_nm = _haversine_nm(flight_lat, flight_lon, dest_coords[0], dest_coords[1])
+    eta_dt = datetime.now(timezone.utc) + timedelta(hours=dist_nm / ground_speed_kt)
+    return eta_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _build_flight(
     ac: dict[str, Any],
     lat: float,
@@ -469,6 +504,7 @@ def _build_flight(
     airline_name: str | None = None
     origin_iata = origin_name = destination_iata = destination_name = None
     route_verified = False
+    dest_coords: tuple[float, float] | None = None
 
     # Parsed early so the plausibility check can compare it to bearing-to-destination.
     track_raw = ac.get("track")
@@ -483,6 +519,7 @@ def _build_flight(
             if resolved is not None:
                 origin_iata, origin_name, destination_iata, destination_name = resolved
                 route_verified = True
+                dest_coords = _dest_coords_from_cached(cached)
 
     airline_icao, airline_name = _apply_true_airline(airline_icao, airline_name)
 
@@ -500,6 +537,11 @@ def _build_flight(
     vertical_rate_fpm = float(vs_raw) if isinstance(vs_raw, (int, float)) else None
 
     on_ground = ac.get("alt_baro") == "ground"
+
+    eta_utc = _compute_eta_utc(lat, lon, ground_speed_kt, dest_coords)
+    scheduled_arrival_utc = (
+        airlabs.get_scheduled_arrival(callsign) if enrich_route else None
+    )
 
     return Flight(
         icao24=str(ac.get("hex", "")).lower(),
@@ -523,6 +565,8 @@ def _build_flight(
         bearing_deg=bearing_from_viewer_deg,
         on_ground=on_ground,
         route_verified=route_verified,
+        eta_utc=eta_utc,
+        scheduled_arrival_utc=scheduled_arrival_utc,
     )
 
 
