@@ -250,39 +250,26 @@ def _build_stat_cell(
     )
 
 
-def _format_eta_or_delay(flight: Flight) -> tuple[str, str, Color]:
-    """Return (label, value, value_color) for the 4th stats cell.
+_DELAY_RED: Color = (230, 70, 60)
+_DELAY_GREEN: Color = (70, 220, 90)
 
-    Prefers showing schedule delay when both ETA and scheduled arrival are
-    known (color-coded red for late, green for early). Falls back to bare
-    "minutes until arrival" otherwise. "--" when nothing is computable.
+
+def _format_schedule_delta(flight: Flight) -> tuple[str, Color]:
+    """Return (text, color) for the schedule-delta cell.
+
+    Magnitude in minutes only (no sign — color encodes direction). "--" when
+    we don't have both an ETA and a scheduled arrival to compare.
     """
     eta_dt = _parse_iso_utc(flight.eta_utc)
     sched_dt = _parse_iso_utc(flight.scheduled_arrival_utc)
-    if eta_dt is not None and sched_dt is not None:
-        delta_min = round((eta_dt - sched_dt).total_seconds() / 60.0)
-        if delta_min == 0:
-            return ("L", "OT", COLOR_VALUE)
-        capped = max(-99, min(99, delta_min))
-        sign = "+" if capped > 0 else "-"
-        text = f"{sign}{abs(capped):02d}"
-        # Tolerate ±5 min as "on time" coloring.
-        if delta_min > 5:
-            color: Color = (230, 70, 60)  # red
-        elif delta_min < -5:
-            color = (70, 220, 90)  # green
-        else:
-            color = COLOR_VALUE
-        return ("L", text, color)
-    if eta_dt is not None:
-        from datetime import datetime, timezone  # local import to avoid top-level churn
-        now = datetime.now(timezone.utc)
-        mins = round((eta_dt - now).total_seconds() / 60.0)
-        if mins < 0:
-            return ("E", "LD", COLOR_LABEL)  # already past ETA; "landed"
-        capped = min(99, max(0, mins))
-        return ("E", f"{capped:02d}", COLOR_ACCENT)
-    return ("E", "--", COLOR_LABEL)
+    if eta_dt is None or sched_dt is None:
+        return "--", COLOR_LABEL
+    delta_min = round((eta_dt - sched_dt).total_seconds() / 60.0)
+    if delta_min > 0:
+        return f"{delta_min}", _DELAY_RED   # late
+    if delta_min < 0:
+        return f"{abs(delta_min)}", _DELAY_GREEN  # early
+    return "0", COLOR_VALUE  # on time
 
 
 def _parse_iso_utc(value: str | None) -> "datetime | None":
@@ -296,8 +283,27 @@ def _parse_iso_utc(value: str | None) -> "datetime | None":
         return None
 
 
+def _build_value_cell(value: str, color: Color, cell_w: int) -> Widget:
+    """Single value, no label, centered horizontally and vertically in a 9-tall cell."""
+    value_w, _ = FONT_5X7.measure(value)
+    side_pad = max(0, (cell_w - value_w) // 2)
+    centered = Row(
+        gap=0,
+        sizes=[side_pad, value_w],
+        children=[
+            _spacer(),
+            Text(text=value, font=FONT_5X7, align="left", overflow="clip", color=color),
+        ],
+    )
+    return Column(
+        gap=0,
+        sizes=[1, 7, 1],
+        children=[_spacer(), centered, _spacer()],
+    )
+
+
 def _build_stats_row(flight: Flight) -> Widget:
-    eta_label, eta_value, eta_color = _format_eta_or_delay(flight)
+    delta_text, delta_color = _format_schedule_delta(flight)
 
     def _subrow(left: Widget, right: Widget) -> Widget:
         return Row(
@@ -312,7 +318,7 @@ def _build_stats_row(flight: Flight) -> Widget:
     )
     bottom = _subrow(
         _build_stat_cell("V", _format_vertical_rate(flight.vertical_rate_fpm), STAT_CELL_W_LEFT),
-        _build_stat_cell(eta_label, eta_value, STAT_CELL_W_RIGHT, value_color=eta_color),
+        _build_value_cell(delta_text, delta_color, STAT_CELL_W_RIGHT),
     )
     return Column(
         gap=0,
