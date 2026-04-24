@@ -37,7 +37,12 @@ ROUTE_PLAUSIBILITY_FRACTION = 0.10
 # differs by more than this. Catches stale-cache cases where the geometry happens to
 # fit (e.g. plane in CLE accepted for an MCI→PHL route) but the plane isn't headed
 # anywhere near the destination.
-ROUTE_TRACK_TOLERANCE_DEG = 60.0
+ROUTE_TRACK_TOLERANCE_DEG = 75.0
+# Track-direction check is unreliable near the airport: arrivals fly STARs,
+# base legs, and vectors; departures climb on runway heading before turning
+# on course. Skip the track check when the plane is within this distance of
+# either endpoint.
+ROUTE_TRACK_ENDPOINT_EXEMPT_NM = 30.0
 
 
 # Wholly-owned regional carriers that always operate for a single major.
@@ -267,29 +272,43 @@ def _split_callsign(callsign: str) -> tuple[str | None, str | None]:
 # FR24 charges one credit per *result*, so we want one call returning one
 # result, only when needed. The display ever shows just the closest in-cone
 # in-radar flight, so we only ever look up that one callsign.
-_FR24_NEGATIVE_TTL_S = 3600.0  # don't re-query "no route" callsigns for an hour
+_FR24_NEGATIVE_TTL_S = 180.0   # retry "no route" callsigns after 3 min (flight may have just departed)
+_FR24_POSITIVE_TTL_S = 4 * 3600.0  # callsigns get reused intra-day; cap reuse window
 
-_known_routes: dict[str, tuple[str, ...]] = {}     # callsign → route, kept for process lifetime
-_negative_routes: dict[str, float] = {}            # callsign → ts when "no route" was last seen
+_known_routes: dict[str, tuple[float, tuple[str, ...]]] = {}  # callsign → (cached_at, route)
+_negative_routes: dict[str, float] = {}                       # callsign → ts when "no route" was last seen
 
 
-def _get_route_for(callsign: str, timeout_s: float = DEFAULT_TIMEOUT_S) -> tuple[str, ...] | None:
+def _get_route_for(
+    callsign: str,
+    plane_lat: float,
+    plane_lon: float,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> tuple[str, ...] | None:
     """Return a cached route for ``callsign`` or fetch one from FR24 (1 credit).
 
-    Strategy minimizes credits:
-    * Successful lookups stay cached for the process lifetime (routes don't
-      change for an in-flight aircraft).
-    * "No route" responses are cached for ``_FR24_NEGATIVE_TTL_S`` so we don't
-      keep paying for callsigns FR24 simply doesn't have (private aircraft,
-      etc.) on every snapshot.
+    Strategy minimizes credits while keeping data fresh:
+    * Successful lookups cached for ``_FR24_POSITIVE_TTL_S`` (callsigns get
+      reused by different flights through the day; an unbounded cache would
+      pin a stale morning route on the evening flight).
+    * "No route" responses cached for ``_FR24_NEGATIVE_TTL_S`` — short enough
+      to recover when FR24 catches up to a freshly-departed flight, long
+      enough to not hammer the API on truly route-less callsigns.
     * Network/HTTP errors aren't cached — we'll retry next snapshot.
+    * When FR24 returns multiple matches (callsign reuse — e.g. one plane
+      in CLE and another in LAX), we pick the entry whose live position is
+      closest to ``(plane_lat, plane_lon)``.
     """
     callsign = callsign.upper()
+    now = time.monotonic()
     cached = _known_routes.get(callsign)
     if cached is not None:
-        return cached
+        cached_at, route = cached
+        if (now - cached_at) < _FR24_POSITIVE_TTL_S:
+            return route
+        _known_routes.pop(callsign, None)
     neg_ts = _negative_routes.get(callsign)
-    if neg_ts is not None and (time.monotonic() - neg_ts) < _FR24_NEGATIVE_TTL_S:
+    if neg_ts is not None and (now - neg_ts) < _FR24_NEGATIVE_TTL_S:
         return None
 
     api_key = os.environ.get("FR24_API_KEY")
@@ -309,7 +328,16 @@ def _get_route_for(callsign: str, timeout_s: float = DEFAULT_TIMEOUT_S) -> tuple
         return None  # transient — don't poison the cache, retry next snapshot
 
     entries = data.get("data") if isinstance(data, dict) else None
-    entry = entries[0] if isinstance(entries, list) and entries and isinstance(entries[0], dict) else None
+    candidates = [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+
+    def _entry_distance_nm(entry: dict[str, Any]) -> float:
+        lat = entry.get("lat")
+        lon = entry.get("lon")
+        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            return float("inf")
+        return _haversine_nm(plane_lat, plane_lon, float(lat), float(lon))
+
+    entry = min(candidates, key=_entry_distance_nm) if candidates else None
     if entry:
         dep_iata = str(entry.get("orig_iata") or "").strip().upper()
         arr_iata = str(entry.get("dest_iata") or "").strip().upper()
@@ -329,10 +357,10 @@ def _get_route_for(callsign: str, timeout_s: float = DEFAULT_TIMEOUT_S) -> tuple
                 f"{arr.latitude:.6f}",
                 f"{arr.longitude:.6f}",
             )
-            _known_routes[callsign] = tup
+            _known_routes[callsign] = (now, tup)
             return tup
 
-    _negative_routes[callsign] = time.monotonic()
+    _negative_routes[callsign] = now
     return None
 
 
@@ -348,13 +376,13 @@ def _route_is_plausible(
     direct = _haversine_nm(origin_lat, origin_lon, dest_lat, dest_lon)
     if direct <= 0.0:
         return False
-    via_flight = _haversine_nm(origin_lat, origin_lon, flight_lat, flight_lon) + _haversine_nm(
-        flight_lat, flight_lon, dest_lat, dest_lon
-    )
+    dist_to_orig = _haversine_nm(flight_lat, flight_lon, origin_lat, origin_lon)
+    dist_to_dest = _haversine_nm(flight_lat, flight_lon, dest_lat, dest_lon)
+    via_flight = dist_to_orig + dist_to_dest
     allowed = direct * (1.0 + ROUTE_PLAUSIBILITY_FRACTION) + ROUTE_PLAUSIBILITY_FIXED_NM
     if via_flight > allowed:
         return False
-    if track_deg is not None:
+    if track_deg is not None and min(dist_to_orig, dist_to_dest) > ROUTE_TRACK_ENDPOINT_EXEMPT_NM:
         bearing_to_dest = _bearing_deg(flight_lat, flight_lon, dest_lat, dest_lon)
         if _angular_distance_deg(track_deg, bearing_to_dest) > ROUTE_TRACK_TOLERANCE_DEG:
             return False
@@ -576,7 +604,7 @@ def fetch_air_snapshot(
 
         fr24_routes: dict[str, tuple[str, ...]] = {}
         if enrich_route:
-            route_tuple = _get_route_for(callsign, timeout_s=timeout_s)
+            route_tuple = _get_route_for(callsign, lat, lon, timeout_s=timeout_s)
             if route_tuple is not None:
                 fr24_routes = {callsign.upper(): route_tuple}
 
