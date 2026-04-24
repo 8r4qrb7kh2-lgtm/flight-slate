@@ -71,7 +71,7 @@ COLOR_BAR_BG: Color = (18, 32, 44)
 COLOR_BAR_TICK: Color = (90, 130, 160)
 COLOR_RADAR_SWEEP: Color = (60, 200, 90)
 
-SWEEP_PERIOD_S = 4.0
+SWEEP_PERIOD_S = 7.0
 # (degrees behind the head, brightness 0..1) — classic mechanical-radar fade.
 SWEEP_TRAIL_STEPS: tuple[tuple[int, float], ...] = ((4, 0.55), (8, 0.30), (14, 0.15))
 
