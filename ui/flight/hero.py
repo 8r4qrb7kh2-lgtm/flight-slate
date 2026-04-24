@@ -583,38 +583,57 @@ def _build_top_row(snapshot: AirSnapshot) -> Widget:
     )
 
 
+def _format_dep_arr_text(flight: Flight | None, max_width_px: int) -> str:
+    """Compose 'Origin City (XXX) to Destination City (YYY)', abbreviating
+    cities by right-truncation only as much as needed to fit ``max_width_px``.
+
+    Falls back to ``CODE`` (no parens) when a city name is missing. Returns
+    an empty string when both codes are missing.
+    """
+    if flight is None:
+        return ""
+    o_code = (flight.origin_iata or "").strip()
+    o_city = (flight.origin_name or "").strip()
+    d_code = (flight.destination_iata or "").strip()
+    d_city = (flight.destination_name or "").strip()
+
+    if not o_code and not d_code:
+        return ""
+
+    def _compose(oc: str, dc: str) -> str:
+        left = f"{oc} ({o_code})" if oc and o_code else (oc or o_code)
+        right = f"{dc} ({d_code})" if dc and d_code else (dc or d_code)
+        if not left:
+            return right
+        if not right:
+            return left
+        return f"{left} to {right}"
+
+    oc, dc = o_city, d_city
+    while FONT_4X6.measure(_compose(oc, dc))[0] > max_width_px:
+        # Shrink whichever city is longer; tie → shrink the right (destination)
+        # so the origin retains slightly more characters when both must be cut.
+        if len(dc) >= len(oc) and dc:
+            dc = dc[:-1].rstrip()
+        elif oc:
+            oc = oc[:-1].rstrip()
+        else:
+            break
+    return _compose(oc, dc)
+
+
 def _build_dep_arr_row(flight: Flight | None) -> Widget:
-    """Footer row showing origin/destination codes + cities (replaces the slider)."""
-    origin_code = (flight.origin_iata if flight else None) or ""
-    origin_city = (flight.origin_name if flight else None) or ""
-    dest_code = (flight.destination_iata if flight else None) or ""
-    dest_city = (flight.destination_name if flight else None) or ""
-
-    # 3-char IATA at FONT_4X6 = 12px; 13px cell leaves 1px breathing room.
-    code_w = 13
-    city_w = 49
-    gap = 2
-
-    left_half = Row(
-        gap=gap,
-        sizes=[code_w, city_w],
-        children=[
-            Text(text=origin_code, font=FONT_4X6, align="left", overflow="clip", color=COLOR_ACCENT),
-            Text(text=origin_city, font=FONT_4X6, align="left", overflow="clip", color=COLOR_VALUE),
-        ],
+    """Footer line: 'Origin City (XXX) to Destination City (YYY)'."""
+    text = _format_dep_arr_text(flight, DISPLAY_WIDTH)
+    line = Text(
+        text=text,
+        font=FONT_4X6,
+        align="center",
+        overflow="clip",
+        color=COLOR_VALUE,
     )
-    right_half = Row(
-        gap=gap,
-        sizes=[city_w, code_w],
-        children=[
-            Text(text=dest_city, font=FONT_4X6, align="right", overflow="clip", color=COLOR_VALUE),
-            Text(text=dest_code, font=FONT_4X6, align="right", overflow="clip", color=COLOR_ACCENT),
-        ],
-    )
-    content = Row(gap=0, sizes=[64, 64], children=[left_half, right_half])
-
     # Center the 6-tall text within the 11-tall footer strip.
-    return Column(gap=0, sizes=[2, 7, 2], children=[_spacer(), content, _spacer()])
+    return Column(gap=0, sizes=[2, 7, 2], children=[_spacer(), line, _spacer()])
 
 
 def _build_waiting_left(snapshot: AirSnapshot) -> Widget:
