@@ -35,6 +35,11 @@ DEFAULT_TIMEOUT_S = 8.0
 
 ROUTE_PLAUSIBILITY_FIXED_NM = 40.0
 ROUTE_PLAUSIBILITY_FRACTION = 0.10
+# When the plane is broadcasting a track, reject routes whose bearing-to-destination
+# differs by more than this. Catches stale-cache cases where the geometry happens to
+# fit (e.g. plane in CLE accepted for an MCI→PHL route) but the plane isn't headed
+# anywhere near the destination.
+ROUTE_TRACK_TOLERANCE_DEG = 60.0
 
 
 # Wholly-owned regional carriers that always operate for a single major.
@@ -354,6 +359,7 @@ def _route_is_plausible(
     origin_lon: float,
     dest_lat: float,
     dest_lon: float,
+    track_deg: float | None = None,
 ) -> bool:
     direct = _haversine_nm(origin_lat, origin_lon, dest_lat, dest_lon)
     if direct <= 0.0:
@@ -362,19 +368,27 @@ def _route_is_plausible(
         flight_lat, flight_lon, dest_lat, dest_lon
     )
     allowed = direct * (1.0 + ROUTE_PLAUSIBILITY_FRACTION) + ROUTE_PLAUSIBILITY_FIXED_NM
-    return via_flight <= allowed
+    if via_flight > allowed:
+        return False
+    if track_deg is not None:
+        bearing_to_dest = _bearing_deg(flight_lat, flight_lon, dest_lat, dest_lon)
+        if _angular_distance_deg(track_deg, bearing_to_dest) > ROUTE_TRACK_TOLERANCE_DEG:
+            return False
+    return True
 
 
 def _apply_cached_route(
     cached: tuple[str, ...],
     flight_lat: float,
     flight_lon: float,
+    track_deg: float | None = None,
 ) -> tuple[str, str | None, str, str | None] | None:
     """Validate a cached route tuple against the current aircraft position.
 
     Returns ``(origin_iata, origin_name, destination_iata, destination_name)``
     when the route is present and plausible; ``None`` when fields are missing,
-    coordinates don't parse, or the aircraft is clearly off-route.
+    coordinates don't parse, or the aircraft is clearly off-route (either by
+    distance from the great circle or by track-direction mismatch).
     """
     (
         _airline_icao,
@@ -397,7 +411,7 @@ def _apply_cached_route(
         d_lon = float(d_lon_s)
     except ValueError:
         return None
-    if not _route_is_plausible(flight_lat, flight_lon, o_lat, o_lon, d_lat, d_lon):
+    if not _route_is_plausible(flight_lat, flight_lon, o_lat, o_lon, d_lat, d_lon, track_deg):
         return None
     return (o_iata, o_name or None, d_iata, d_name or None)
 
@@ -428,6 +442,10 @@ def _build_flight(
     origin_iata = origin_name = destination_iata = destination_name = None
     route_verified = False
 
+    # Parsed early so the plausibility check can compare it to bearing-to-destination.
+    track_raw = ac.get("track")
+    track_deg = float(track_raw) if isinstance(track_raw, (int, float)) else None
+
     if enrich_route:
         # Primary: adsbdb (no auth, no rate limit, rich data).
         cached = _cached_route(callsign)
@@ -436,7 +454,7 @@ def _build_flight(
                 airline_icao = cached[0]
             if cached[1]:
                 airline_name = cached[1]
-            resolved = _apply_cached_route(cached, lat, lon)
+            resolved = _apply_cached_route(cached, lat, lon, track_deg)
             if resolved is not None:
                 origin_iata, origin_name, destination_iata, destination_name = resolved
                 route_verified = True
@@ -447,7 +465,7 @@ def _build_flight(
             if cached is not None:
                 if cached[0] and not airline_icao:
                     airline_icao = cached[0]
-                resolved = _apply_cached_route(cached, lat, lon)
+                resolved = _apply_cached_route(cached, lat, lon, track_deg)
                 if resolved is not None:
                     origin_iata, origin_name, destination_iata, destination_name = resolved
                     route_verified = True
@@ -466,9 +484,6 @@ def _build_flight(
     if vs_raw is None:
         vs_raw = ac.get("geom_rate")
     vertical_rate_fpm = float(vs_raw) if isinstance(vs_raw, (int, float)) else None
-
-    track_raw = ac.get("track")
-    track_deg = float(track_raw) if isinstance(track_raw, (int, float)) else None
 
     on_ground = ac.get("alt_baro") == "ground"
 
