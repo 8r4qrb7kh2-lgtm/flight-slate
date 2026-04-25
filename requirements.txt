@@ -1,5 +1,5 @@
 Pillow>=10,<13
 pybind11>=2.11,<3
 mapbox-vector-tile>=2.0,<3
-icalendar>=5.0,<7
+icalendar>=5.0,<8
 recurring-ical-events>=2.1,<4
