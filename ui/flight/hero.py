@@ -257,22 +257,22 @@ _DELAY_RED: Color = (230, 70, 60)
 _DELAY_GREEN: Color = (70, 220, 90)
 
 
-def _format_schedule_delta(flight: Flight) -> tuple[str, Color]:
-    """Return (text, color) for the schedule-delta cell.
+def _format_schedule_delta(flight: Flight) -> tuple[str, str, Color]:
+    """Return (label, value, color) for the schedule-delta cell.
 
-    Magnitude in minutes only (no sign — color encodes direction). "--" when
-    we don't have both an ETA and a scheduled arrival to compare.
+    Label is "L" when late, "E" when early, "" when on-time or unknown.
+    Magnitude in minutes only — color encodes late/early direction.
     """
     eta_dt = _parse_iso_utc(flight.eta_utc)
     sched_dt = _parse_iso_utc(flight.scheduled_arrival_utc)
     if eta_dt is None or sched_dt is None:
-        return "--", COLOR_LABEL
+        return "", "--", COLOR_LABEL
     delta_min = round((eta_dt - sched_dt).total_seconds() / 60.0)
     if delta_min > 0:
-        return f"{delta_min}", _DELAY_RED   # late
+        return "L", f"{delta_min}", _DELAY_RED
     if delta_min < 0:
-        return f"{abs(delta_min)}", _DELAY_GREEN  # early
-    return "0", COLOR_VALUE  # on time
+        return "E", f"{abs(delta_min)}", _DELAY_GREEN
+    return "", "0", COLOR_VALUE  # on time
 
 
 def _parse_iso_utc(value: str | None) -> "datetime | None":
@@ -308,7 +308,13 @@ def _build_value_cell(value: str, color: Color, cell_w: int) -> Widget:
 
 
 def _build_stats_row(flight: Flight) -> Widget:
-    delta_text, delta_color = _format_schedule_delta(flight)
+    delta_label, delta_value, delta_color = _format_schedule_delta(flight)
+    if delta_label:
+        delta_cell = _build_stat_cell(
+            delta_label, delta_value, STAT_CELL_W_RIGHT, value_color=delta_color
+        )
+    else:
+        delta_cell = _build_value_cell(delta_value, delta_color, STAT_CELL_W_RIGHT)
 
     def _subrow(left: Widget, right: Widget) -> Widget:
         return Row(
@@ -323,7 +329,7 @@ def _build_stats_row(flight: Flight) -> Widget:
     )
     bottom = _subrow(
         _build_stat_cell("V", _format_vertical_rate(flight.vertical_rate_fpm), STAT_CELL_W_LEFT),
-        _build_value_cell(delta_text, delta_color, STAT_CELL_W_RIGHT),
+        delta_cell,
     )
     return Column(
         gap=0,
