@@ -37,7 +37,7 @@ from typing import Any
 from standard_led_matrix_interface import RGBMatrixOptions
 from ui import App
 from ui.flight import AirSnapshot, PingHistory, Region, build_flight_hero_page, fetch_air_snapshot
-from ui.flight import inside_temp_server, nest, weather
+from ui.flight import events, inside_temp_server, nest, weather
 
 
 TARGET_REFRESH_HZ = 30
@@ -257,6 +257,8 @@ def main() -> int:
             )
 
             weather.configure(state.region.center_lat, state.region.center_lon)
+            ics_raw = _read_str_env("FLIGHT_SLATE_CALENDAR_ICS_URL") or ""
+            events.configure([u.strip() for u in ics_raw.split(",") if u.strip()] or None)
             inside_temp_server.start(_read_int_env("FLIGHT_INSIDE_TEMP_PORT", 8080))
             nest.start(interval_s=_read_float_env("NEST_POLL_SECONDS", 900.0))
             _start_fetch(state, fetch_executor, enrich_route=enrich_route)

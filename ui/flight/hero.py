@@ -27,8 +27,9 @@ from ui.core.colors import Color, colors
 from ui.core.image_asset import ImageFrame, load_png_image_frame
 from ui.core.widgets import Column, Image, Panel, Row, Text, Widget
 from ui.fonts import FONT_3X5, FONT_4X6, FONT_5X7
-from ui.flight import weather
+from ui.flight import events, weather
 from ui.flight.airlines import load_airline_logo, resolve_airline_from_callsign
+from ui.flight.events import UpcomingEvent
 from ui.flight.fun_facts import ANIMAL_FUN_FACTS
 from ui.flight.api import AirSnapshot, Flight
 
@@ -836,6 +837,81 @@ def _build_fun_fact_footer() -> Widget:
     return Column(gap=0, sizes=[2, 7, 2], children=[_spacer(), line, _spacer()])
 
 
+class _EventFootState:
+    """Persistent state for the upcoming-event footer.
+
+    The scroll anchor only resets when the event identity changes (different
+    title or start time), so the title scrolls smoothly across the
+    once-per-minute updates of the time-until phrase.
+    """
+
+    def __init__(self) -> None:
+        self.last_event_key: tuple[str, "datetime"] | None = None
+        self.anchor_mono: float = 0.0
+
+
+_event_foot = _EventFootState()
+
+
+def _format_event_clock(local: "datetime") -> str:
+    """'9 AM' / '3:30 PM' — drop leading zero on hour, drop ':00' minutes."""
+    h12 = local.hour % 12 or 12
+    suffix = "AM" if local.hour < 12 else "PM"
+    if local.minute == 0:
+        return f"{h12} {suffix}"
+    return f"{h12}:{local.minute:02d} {suffix}"
+
+
+def _format_event_when(ev: UpcomingEvent) -> str:
+    """Phrase trailing the title: 'now', 'in 12m', 'at 3:30 PM', 'Sun 9 AM'."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    if ev.start <= now < ev.end:
+        return "now"
+    delta_s = (ev.start - now).total_seconds()
+    if delta_s < 60.0:
+        return "now"
+    minutes = int(delta_s // 60)
+    if minutes < 60:
+        return f"in {minutes}m"
+    local_start = ev.start.astimezone()
+    today_local = now.astimezone().date()
+    if local_start.date() == today_local:
+        return f"at {_format_event_clock(local_start)}"
+    return f"{local_start.strftime('%a')} {_format_event_clock(local_start)}"
+
+
+def _build_event_footer(ev: UpcomingEvent) -> Widget:
+    key = (ev.title, ev.start)
+    if _event_foot.last_event_key != key:
+        _event_foot.last_event_key = key
+        _event_foot.anchor_mono = time.monotonic()
+
+    text = f"{ev.title} {_format_event_when(ev)}"
+    text_w, _ = FONT_4X6.measure(text)
+    if text_w <= DISPLAY_WIDTH:
+        line: Widget = Text(
+            text=text,
+            font=FONT_4X6,
+            align="center",
+            overflow="clip",
+            color=COLOR_VALUE,
+        )
+    else:
+        elapsed = max(0.0, time.monotonic() - _event_foot.anchor_mono)
+        scroll_offset = elapsed * _FACT_SCROLL_PX_PER_S
+        line = Text(
+            text=text,
+            font=FONT_4X6,
+            align="left",
+            overflow="overflow",
+            overflow_offset=scroll_offset,
+            overflow_gap=20,
+            color=COLOR_VALUE,
+        )
+    return Column(gap=0, sizes=[2, 7, 2], children=[_spacer(), line, _spacer()])
+
+
 def build_flight_hero_page(
     snapshot: AirSnapshot | None,
     *,
@@ -852,7 +928,11 @@ def build_flight_hero_page(
     _maybe_refresh_idle_fact(snapshot)
 
     if snapshot.selected is None:
-        footer: Widget = _build_fun_fact_footer()
+        upcoming = events.next_event()
+        if upcoming is not None:
+            footer: Widget = _build_event_footer(upcoming)
+        else:
+            footer = _build_fun_fact_footer()
     else:
         footer = _build_dep_arr_row(snapshot.selected)
 
