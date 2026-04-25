@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -35,6 +36,11 @@ _TIMEOUT_S = 8.0
 _POSITIVE_TTL_S = 20 * 3600.0
 _NEGATIVE_TTL_S = 3600.0
 
+# Callsign shaped like a tail registration (N + digits + optional letters).
+# AirLabs doesn't carry schedules for these — skip entirely so we don't waste
+# the monthly quota negative-caching every passing GA/medical flight.
+_TAIL_NUMBER_RE = re.compile(r"^N\d+[A-Z]*$")
+
 
 # callsign → (cached_at, scheduled_arrival_utc_iso)
 _known: dict[str, tuple[float, str]] = {}
@@ -42,13 +48,15 @@ _negative: dict[str, float] = {}
 
 
 def _normalize_callsign(callsign: str) -> str:
-    """AirLabs expects an IATA flight code (WN2936) but our callsigns are ICAO
-    (SWA2936). Strip non-alphanumerics; the API's ``flight_iata`` parameter
-    handles either format reasonably well in practice for major airlines, but
-    private/GA tail numbers (N896CC) won't resolve and will land in the
-    negative cache as expected.
+    """Strip whitespace + non-alphanumerics, uppercase. ADSB callsigns are
+    typically ICAO format (SWA2936, UAL1234) — we send those via flight_icao.
     """
     return "".join(ch for ch in callsign.upper() if ch.isalnum())
+
+
+def _looks_icao(callsign: str) -> bool:
+    """ICAO callsigns lead with a 3-letter airline prefix; IATA leads with 2."""
+    return len(callsign) >= 4 and callsign[:3].isalpha()
 
 
 def _arrival_to_iso_utc(value: Any) -> str | None:
@@ -71,6 +79,8 @@ def get_scheduled_arrival(callsign: str) -> str | None:
     if not callsign:
         return None
     cs = _normalize_callsign(callsign)
+    if not cs or _TAIL_NUMBER_RE.match(cs):
+        return None
     now = time.monotonic()
 
     cached = _known.get(cs)
@@ -87,7 +97,13 @@ def get_scheduled_arrival(callsign: str) -> str | None:
     if not api_key:
         return None
 
-    url = f"{_FLIGHT_URL}?api_key={urllib.parse.quote(api_key)}&flight_iata={urllib.parse.quote(cs)}"
+    # ADSB callsigns are usually ICAO-format (3-letter airline prefix).
+    # AirLabs returns null on flight_iata for those; flight_icao matches.
+    param = "flight_icao" if _looks_icao(cs) else "flight_iata"
+    url = (
+        f"{_FLIGHT_URL}?api_key={urllib.parse.quote(api_key)}"
+        f"&{param}={urllib.parse.quote(cs)}"
+    )
     request = urllib.request.Request(url, headers={"User-Agent": "flight-slate/0.1"})
     try:
         with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as response:
