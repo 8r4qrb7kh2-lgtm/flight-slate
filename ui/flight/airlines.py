@@ -16,6 +16,7 @@ ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets" / "airlines"
 # by N-number vanity suffix (e.g. medical helicopters).
 _AIRLINE_LOGOS: dict[str, str] = {
     "ACA": "airlines-air-canada-48.png",
+    "EIN": "airlines-aer-lingus-48.png",
     "ASA": "airlines-alaskan-48.png",
     "AAY": "airlines-allegiant-48.png",
     "PCM": "airlines-amazon-48.png",  # Amazon Air via ATSG carriers
@@ -46,6 +47,7 @@ _AIRLINE_LOGOS: dict[str, str] = {
 # IATA 2-letter codes that sometimes show up in consumer feeds instead of ICAO.
 _IATA_TO_ICAO: dict[str, str] = {
     "AC": "ACA",
+    "EI": "EIN",
     "AS": "ASA",
     "G4": "AAY",
     "AA": "AAL",
