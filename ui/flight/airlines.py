@@ -37,6 +37,9 @@ _AIRLINE_LOGOS: dict[str, str] = {
     "UNH": "operators-university-hospitals-48.png",
     "MHL": "operators-metrohealth-48.png",
     "LFT": "operators-lifeflight-48.png",
+    # STAT MedEvac (Pittsburgh-based, regional). Real callsign prefix is
+    # "STAT" so the standard 3-letter resolver returns "STA"; map that here.
+    "STA": "operators-stat-medevac-48.png",
 }
 
 
@@ -68,6 +71,7 @@ _N_NUMBER_OPERATOR_SUFFIXES: dict[str, str] = {
     "UH": "UNH",  # University Hospitals
     "MH": "MHL",  # MetroHealth (Metro Life Flight)
     "LF": "LFT",  # LifeFlight
+    "MV": "STA",  # STAT MedEvac (e.g. N911MV)
 }
 
 
