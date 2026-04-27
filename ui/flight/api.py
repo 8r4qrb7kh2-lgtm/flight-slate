@@ -556,7 +556,8 @@ def _build_flight(
 
     eta_utc = _compute_eta_utc(lat, lon, ground_speed_kt, dest_coords)
     scheduled_arrival_utc = (
-        airlabs.get_scheduled_arrival(callsign) if enrich_route else None
+        airlabs.get_scheduled_arrival(callsign, dest_iata=destination_iata)
+        if enrich_route else None
     )
 
     return Flight(

@@ -1,18 +1,23 @@
 """AirLabs flight-schedule lookup for delay/early calculations.
 
 Used to obtain *scheduled* arrival times that FR24's API doesn't return.
-We compare AirLabs' ``arr_time_utc`` (scheduled) against FR24's ``eta``
-(current estimate) to compute "X min late / early" for the displayed
-flight.
+We compare AirLabs' ``arr_time_utc`` (scheduled) against the slate's locally
+computed ``eta_utc`` (current estimate) to compute "X min late / early" for
+the displayed flight.
+
+Uses the ``/schedules`` endpoint rather than ``/flight``: ``/flight`` returns
+*one* instance per callsign and frequently picks the wrong one when a flight
+number is reused on the same day (e.g. Republic running DL5674 BOS-CLE in
+both the morning and afternoon). ``/schedules`` returns every instance for
+the day so we can disambiguate by destination and live status.
 
 The free AirLabs tier is 1,000 calls/month, so caching is aggressive:
 
-* Positive cache: per callsign, valid for 20 hours. A given callsign's
-  schedule for the day doesn't change once filed; reusing the same
-  callsign on a future day with a different schedule will refresh after
-  the TTL expires.
-* Negative cache: per callsign, 1 hour. Skip non-commercial / unscheduled
-  callsigns (private aircraft, military) without burning monthly budget.
+* Positive cache: per (callsign, dest_iata), valid for 20 hours. A given
+  flight's schedule for the day doesn't change once filed; reusing the same
+  callsign on a future day will refresh after the TTL expires.
+* Negative cache: per (callsign, dest_iata), 1 hour. Skip non-commercial /
+  unscheduled callsigns (private aircraft, military) without burning budget.
 * Network errors aren't cached — retried next snapshot.
 
 Configured by env var:
@@ -31,19 +36,10 @@ import urllib.request
 from typing import Any
 
 
-_FLIGHT_URL = "https://airlabs.co/api/v9/flight"
+_SCHEDULES_URL = "https://airlabs.co/api/v9/schedules"
 _TIMEOUT_S = 8.0
 _POSITIVE_TTL_S = 20 * 3600.0
 _NEGATIVE_TTL_S = 3600.0
-# Same-day callsign reuse (e.g. Republic running DL5674 BOS-CLE twice in one
-# day) sometimes makes AirLabs return the wrong instance — a record whose
-# departure is hours in the future, or whose arrival was hours ago. The slate
-# only looks up airborne flights, so anything outside this window around "now"
-# is a different instance and should be skipped.
-_INSTANCE_WINDOW_S = 30 * 60.0
-# Short negative TTL for instance mismatches so we recover quickly when AirLabs
-# catches up, without burning the monthly quota re-querying every snapshot.
-_MISMATCH_TTL_S = 5 * 60.0
 
 # Callsign shaped like a tail registration (N + digits + optional letters).
 # AirLabs doesn't carry schedules for these — skip entirely so we don't waste
@@ -51,9 +47,9 @@ _MISMATCH_TTL_S = 5 * 60.0
 _TAIL_NUMBER_RE = re.compile(r"^N\d+[A-Z]*$")
 
 
-# callsign → (cached_at, scheduled_arrival_utc_iso)
-_known: dict[str, tuple[float, str]] = {}
-_negative: dict[str, float] = {}
+# (callsign, dest_iata) → (cached_at, scheduled_arrival_utc_iso)
+_known: dict[tuple[str, str], tuple[float, str]] = {}
+_negative: dict[tuple[str, str], float] = {}
 
 
 def _normalize_callsign(callsign: str) -> str:
@@ -79,46 +75,67 @@ def _arrival_to_iso_utc(value: Any) -> str | None:
     return text[:10] + "T" + text[11:16] + ":00Z"
 
 
-def _is_current_instance(payload: dict[str, Any]) -> bool:
-    """True iff the AirLabs record describes a flight active around now.
+def _select_instance(items: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Pick the AirLabs schedule entry that matches the live aircraft.
 
-    AirLabs sometimes returns the next or prior instance of a reused callsign
-    (e.g. a regional running the same flight number twice on the same day).
-    Those records put departure hours in the future or arrival hours in the
-    past, which yields a wildly wrong schedule-delta. The slate only ever
-    looks up airborne flights, so any record whose dep/arr timestamps don't
-    bracket "now" is the wrong instance.
+    ``/schedules`` returns every instance of a flight number for the day —
+    morning and afternoon legs, return legs, future days. The live aircraft
+    we're looking up is exactly one of these. Selection rules, in order:
+
+    1. ``status=active`` — the flight currently in the air. There is almost
+       never more than one active instance of the same callsign at a time.
+    2. Falling back: an instance whose scheduled departure has passed and
+       whose scheduled arrival hasn't (i.e. timestamps bracket "now"). Covers
+       cases where AirLabs hasn't updated ``status`` yet.
     """
+    if not items:
+        return None
+    active = [r for r in items if r.get("status") == "active"]
+    if active:
+        if len(active) == 1:
+            return active[0]
+        # Tiebreak on the most recent actual departure — the one that took
+        # off most recently is the one currently airborne.
+        active.sort(key=lambda r: r.get("dep_time_ts") or 0, reverse=True)
+        return active[0]
     now = time.time()
-    dep_ts = payload.get("dep_time_ts")
-    if isinstance(dep_ts, (int, float)) and dep_ts > now + _INSTANCE_WINDOW_S:
-        return False
-    arr_ts = payload.get("arr_time_ts")
-    if isinstance(arr_ts, (int, float)) and arr_ts < now - _INSTANCE_WINDOW_S:
-        return False
-    return True
+    for r in items:
+        dep_ts = r.get("dep_time_ts")
+        arr_ts = r.get("arr_time_ts")
+        if (
+            isinstance(dep_ts, (int, float)) and dep_ts <= now
+            and isinstance(arr_ts, (int, float)) and arr_ts >= now
+        ):
+            return r
+    return None
 
 
-def get_scheduled_arrival(callsign: str) -> str | None:
+def get_scheduled_arrival(
+    callsign: str, *, dest_iata: str | None = None
+) -> str | None:
     """Return the scheduled arrival as an ISO-8601 UTC string, or None.
 
-    Hits AirLabs only on cache miss. Safe to call from the request-path of
-    a snapshot fetch: a single call adds ~100-300 ms latency on miss.
+    ``dest_iata`` (when known) filters AirLabs' schedule list to the matching
+    route, which makes instance selection unambiguous in the common case.
+    Hits AirLabs only on cache miss; safe to call from the request-path of
+    a snapshot fetch (one call adds ~100-300 ms on miss).
     """
     if not callsign:
         return None
     cs = _normalize_callsign(callsign)
     if not cs or _TAIL_NUMBER_RE.match(cs):
         return None
+    arr = (dest_iata or "").upper()
+    key = (cs, arr)
     now = time.monotonic()
 
-    cached = _known.get(cs)
+    cached = _known.get(key)
     if cached is not None:
         cached_at, value = cached
         if (now - cached_at) < _POSITIVE_TTL_S:
             return value
-        _known.pop(cs, None)
-    neg_ts = _negative.get(cs)
+        _known.pop(key, None)
+    neg_ts = _negative.get(key)
     if neg_ts is not None and (now - neg_ts) < _NEGATIVE_TTL_S:
         return None
 
@@ -130,9 +147,11 @@ def get_scheduled_arrival(callsign: str) -> str | None:
     # AirLabs returns null on flight_iata for those; flight_icao matches.
     param = "flight_icao" if _looks_icao(cs) else "flight_iata"
     url = (
-        f"{_FLIGHT_URL}?api_key={urllib.parse.quote(api_key)}"
+        f"{_SCHEDULES_URL}?api_key={urllib.parse.quote(api_key)}"
         f"&{param}={urllib.parse.quote(cs)}"
     )
+    if arr:
+        url += f"&arr_iata={urllib.parse.quote(arr)}"
     request = urllib.request.Request(url, headers={"User-Agent": "flight-slate/0.1"})
     try:
         with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as response:
@@ -141,15 +160,13 @@ def get_scheduled_arrival(callsign: str) -> str | None:
         return None  # transient — don't poison the cache, retry next snapshot
 
     payload = data.get("response") if isinstance(data, dict) else None
-    if isinstance(payload, dict):
-        if not _is_current_instance(payload):
-            # Short negative-cache so we re-check soon when AirLabs updates.
-            _negative[cs] = now - (_NEGATIVE_TTL_S - _MISMATCH_TTL_S)
-            return None
-        iso = _arrival_to_iso_utc(payload.get("arr_time_utc"))
+    items = payload if isinstance(payload, list) else []
+    chosen = _select_instance([r for r in items if isinstance(r, dict)])
+    if chosen is not None:
+        iso = _arrival_to_iso_utc(chosen.get("arr_time_utc"))
         if iso is not None:
-            _known[cs] = (now, iso)
+            _known[key] = (now, iso)
             return iso
 
-    _negative[cs] = now
+    _negative[key] = now
     return None
