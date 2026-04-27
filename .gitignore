@@ -8,3 +8,8 @@ venv/
 
 # macOS
 .DS_Store
+
+# Local secrets (API keys etc.) — sourced by start-flight-slate.sh after
+# the tracked env.flight-slate.sh. Keeping these untracked means a `git
+# reset --hard` / `git pull` can never wipe them.
+env.flight-slate.local.sh

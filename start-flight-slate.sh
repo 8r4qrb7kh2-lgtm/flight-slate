@@ -12,5 +12,9 @@ if [ -d .git ]; then
 fi
 
 source .venv/bin/activate
-./env.flight-slate.sh
-sudo -E env "PATH=$PATH" python core_ui_demo.py
+# Hardware config (tracked).
+source ./env.flight-slate.sh
+# API keys (untracked, gitignored — see env.flight-slate.local.sh.example).
+# Optional so the script doesn't fail if the file is absent.
+[ -f ./env.flight-slate.local.sh ] && source ./env.flight-slate.local.sh
+sudo -E env "PATH=$PATH" python flight_display.py
