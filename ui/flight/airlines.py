@@ -95,6 +95,18 @@ def _n_number_suffix_match(callsign: str) -> str | None:
     return _N_NUMBER_OPERATOR_SUFFIXES.get(suffix)
 
 
+def is_known_airline(airline_icao: str | None) -> bool:
+    """True if we have a logo asset registered for this ICAO code.
+
+    Used to validate FR24's ``painted_as`` (marketing-airline) field before
+    overriding the operating-airline derived from the callsign — junky values
+    (synthetic codes, blanks, charter brands) shouldn't replace clean data.
+    """
+    if not airline_icao:
+        return False
+    return airline_icao.upper() in _AIRLINE_LOGOS
+
+
 def resolve_airline_from_callsign(callsign: str | None) -> str | None:
     """Return a 3-letter ICAO (real or pseudo) for the callsign, or None."""
     if not callsign:

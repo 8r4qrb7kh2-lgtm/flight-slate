@@ -26,6 +26,7 @@ from typing import Any
 from datetime import datetime, timedelta, timezone
 
 from ui.flight import airlabs, airports as airport_db
+from ui.flight.airlines import is_known_airline as _is_known_airline
 
 
 ADSB_LOL_URL = "https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{dist}"
@@ -48,17 +49,16 @@ ROUTE_TRACK_ENDPOINT_EXEMPT_NM = 30.0
 
 
 # Wholly-owned regional carriers that always operate for a single major.
-# Maps operating airline ICAO → ticketed (true) airline ICAO.
-# Multi-carrier regionals (SKW/GJS) are still ambiguous from callsign alone.
-# RPA flies for AA, DL, and UA, but at CLE the bulk of RPA traffic is Delta
-# Connection; we'd rather show the Delta logo by default than nothing.
+# Maps operating airline ICAO → ticketed (true) airline ICAO. Used as a
+# fallback when FR24's ``painted_as`` is missing or unrecognized; multi-carrier
+# regionals (SKW/GJS/RPA) aren't included because the brand varies per flight
+# and the right answer comes from FR24's ``painted_as`` instead.
 TRUE_AIRLINE_OVERRIDES: dict[str, str] = {
     "EDV": "DAL",  # Endeavor Air → Delta Connection (wholly owned by Delta)
     "ENY": "AAL",  # Envoy Air → American Eagle (wholly owned by AA)
     "PDT": "AAL",  # Piedmont Airlines → American Eagle (wholly owned by AA)
     "JIA": "AAL",  # PSA Airlines → American Eagle (wholly owned by AA)
     "JZA": "ACA",  # Jazz Aviation → Air Canada Express
-    "RPA": "DAL",  # Republic Airways → Delta Connection (heuristic for CLE)
 }
 
 # Human-readable names paired with the overrides (for the airline_name field).
@@ -513,8 +513,18 @@ def _build_flight(
     if enrich_route and fr24_routes:
         cached = fr24_routes.get(callsign.upper())
         if cached is not None:
-            if cached[0] and not airline_icao:
-                airline_icao = cached[0]
+            # Callsign prefix only tells us the *operator* (ASH = Mesa, SKW =
+            # SkyWest, RPA = Republic). For passenger-facing display we want
+            # the *marketing* airline whose livery is on the plane and whose
+            # name is on the boarding pass — that's FR24's ``painted_as``.
+            # Only adopt it when we recognize the code; otherwise FR24 noise
+            # (synthetic prefixes, blanks, charter brands) could erase a
+            # perfectly good operator code that has its own logo.
+            painted = cached[0]
+            if painted and _is_known_airline(painted):
+                airline_icao = painted
+            elif painted and not airline_icao:
+                airline_icao = painted
             resolved = _apply_cached_route(cached, lat, lon, track_deg)
             if resolved is not None:
                 origin_iata, origin_name, destination_iata, destination_name = resolved
