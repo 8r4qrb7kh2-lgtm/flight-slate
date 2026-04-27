@@ -35,6 +35,15 @@ _FLIGHT_URL = "https://airlabs.co/api/v9/flight"
 _TIMEOUT_S = 8.0
 _POSITIVE_TTL_S = 20 * 3600.0
 _NEGATIVE_TTL_S = 3600.0
+# Same-day callsign reuse (e.g. Republic running DL5674 BOS-CLE twice in one
+# day) sometimes makes AirLabs return the wrong instance — a record whose
+# departure is hours in the future, or whose arrival was hours ago. The slate
+# only looks up airborne flights, so anything outside this window around "now"
+# is a different instance and should be skipped.
+_INSTANCE_WINDOW_S = 30 * 60.0
+# Short negative TTL for instance mismatches so we recover quickly when AirLabs
+# catches up, without burning the monthly quota re-querying every snapshot.
+_MISMATCH_TTL_S = 5 * 60.0
 
 # Callsign shaped like a tail registration (N + digits + optional letters).
 # AirLabs doesn't carry schedules for these — skip entirely so we don't waste
@@ -68,6 +77,26 @@ def _arrival_to_iso_utc(value: Any) -> str | None:
         return None
     # AirLabs format: "2026-04-25 00:25" — naive UTC, no seconds.
     return text[:10] + "T" + text[11:16] + ":00Z"
+
+
+def _is_current_instance(payload: dict[str, Any]) -> bool:
+    """True iff the AirLabs record describes a flight active around now.
+
+    AirLabs sometimes returns the next or prior instance of a reused callsign
+    (e.g. a regional running the same flight number twice on the same day).
+    Those records put departure hours in the future or arrival hours in the
+    past, which yields a wildly wrong schedule-delta. The slate only ever
+    looks up airborne flights, so any record whose dep/arr timestamps don't
+    bracket "now" is the wrong instance.
+    """
+    now = time.time()
+    dep_ts = payload.get("dep_time_ts")
+    if isinstance(dep_ts, (int, float)) and dep_ts > now + _INSTANCE_WINDOW_S:
+        return False
+    arr_ts = payload.get("arr_time_ts")
+    if isinstance(arr_ts, (int, float)) and arr_ts < now - _INSTANCE_WINDOW_S:
+        return False
+    return True
 
 
 def get_scheduled_arrival(callsign: str) -> str | None:
@@ -113,6 +142,10 @@ def get_scheduled_arrival(callsign: str) -> str | None:
 
     payload = data.get("response") if isinstance(data, dict) else None
     if isinstance(payload, dict):
+        if not _is_current_instance(payload):
+            # Short negative-cache so we re-check soon when AirLabs updates.
+            _negative[cs] = now - (_NEGATIVE_TTL_S - _MISMATCH_TTL_S)
+            return None
         iso = _arrival_to_iso_utc(payload.get("arr_time_utc"))
         if iso is not None:
             _known[cs] = (now, iso)
