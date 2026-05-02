@@ -28,10 +28,13 @@ from ui.core.image_asset import ImageFrame, load_png_image_frame
 from ui.core.widgets import Column, Image, Panel, Row, Text, Widget
 from ui.fonts import FONT_3X5, FONT_4X6, FONT_5X7
 from ui.flight import events, weather
+from ui.flight.aircraft_types import aircraft_long_name
 from ui.flight.airlines import load_airline_logo, resolve_airline_from_callsign
 from ui.flight.events import UpcomingEvent
 from ui.flight.fun_facts import ANIMAL_FUN_FACTS
 from ui.flight.api import AirSnapshot, Flight
+from ui.flight.maps import default_fetcher
+from ui.flight.route_map import RouteMap
 
 
 ICON_DIR = Path(__file__).resolve().parents[2] / "assets" / "icons"
@@ -192,23 +195,29 @@ def _route_text(flight: Flight) -> str:
     return " ".join(parts) if parts else "AIRBORNE"
 
 
-def _callsign_display(flight: Flight) -> str:
-    airline = flight.airline_icao or ""
-    number = flight.flight_number or ""
-    if airline and number:
-        return f"{airline} {number}"
-    return flight.callsign.strip() or flight.icao24.upper()
+def _aircraft_type_display(flight: Flight) -> str:
+    """Friendly aircraft type name, falling back to the raw code/reg if needed.
 
-
-def _aircraft_line(flight: Flight) -> str:
-    plane = (flight.aircraft_type or "").strip()
+    Replaces the call-sign line in the details column — the aircraft type
+    is what most viewers actually want to know ("oh, it's a 737-800")
+    once the airline logo has already told them who's flying it.
+    """
+    long_name = aircraft_long_name(flight.aircraft_type)
+    if long_name:
+        return long_name
     reg = (flight.registration or "").strip()
-    if plane and reg:
-        return f"{plane} {reg}"
-    if plane:
-        return plane
     if reg:
         return reg
+    return flight.icao24.upper() or "AIRCRAFT"
+
+
+def _registration_line(flight: Flight) -> str:
+    reg = (flight.registration or "").strip()
+    if reg:
+        return reg
+    plane = (flight.aircraft_type or "").strip()
+    if plane:
+        return plane
     return flight.icao24.upper() or ""
 
 
@@ -338,18 +347,55 @@ def _build_stats_row(flight: Flight) -> Widget:
     )
 
 
+class _TypeNameScroll:
+    """Persistent anchor for the aircraft-type marquee.
+
+    Reset whenever the displayed text changes so the scroll restarts from
+    the left edge for a new aircraft instead of jumping mid-word.
+    """
+
+    def __init__(self) -> None:
+        self.last_text: str | None = None
+        self.anchor_mono: float = 0.0
+
+
+_type_name_scroll = _TypeNameScroll()
+_TYPE_NAME_SCROLL_PX_PER_S = 14.0
+
+
+def _build_type_name_text(text: str, max_width_px: int) -> Widget:
+    """Type-name line: clip when it fits, marquee when it doesn't."""
+    width, _ = FONT_4X6.measure(text)
+    if width <= max_width_px:
+        return Text(
+            text=text,
+            font=FONT_4X6,
+            align="left",
+            overflow="clip",
+            color=COLOR_VALUE,
+        )
+    if _type_name_scroll.last_text != text:
+        _type_name_scroll.last_text = text
+        _type_name_scroll.anchor_mono = time.monotonic()
+    elapsed = max(0.0, time.monotonic() - _type_name_scroll.anchor_mono)
+    return Text(
+        text=text,
+        font=FONT_4X6,
+        align="left",
+        overflow="overflow",
+        overflow_offset=elapsed * _TYPE_NAME_SCROLL_PX_PER_S,
+        overflow_gap=12,
+        color=COLOR_VALUE,
+    )
+
+
 def _build_details_column(flight: Flight) -> Widget:
+    type_text = _aircraft_type_display(flight)
     lines = Column(
         gap=3,
-        sizes=[7, 7, 6],
+        sizes=[6, 7, 6],
         children=[
-            Text(
-                text=_callsign_display(flight),
-                font=FONT_5X7,
-                align="left",
-                overflow="clip",
-                color=COLOR_VALUE,
-            ),
+            _build_type_name_text(type_text, DETAILS_WIDTH - 2),
             Text(
                 text=_route_text(flight),
                 font=FONT_5X7,
@@ -358,7 +404,7 @@ def _build_details_column(flight: Flight) -> Widget:
                 color=COLOR_ACCENT,
             ),
             Text(
-                text=_aircraft_line(flight),
+                text=_registration_line(flight),
                 font=FONT_4X6,
                 align="left",
                 overflow="clip",
@@ -640,6 +686,71 @@ class PositionBar(Widget):
         canvas.hline(slider_x, slider_y, slider_w, highlight)
 
 
+_ROUTE_MAP_BG: Color = (8, 14, 18)
+_ROUTE_MAP_LAND: Color = (14, 38, 14)
+_ROUTE_MAP_PARK: Color = (24, 78, 24)
+_ROUTE_MAP_BUILDING: Color = (60, 64, 70)
+_ROUTE_MAP_WATER: Color = (16, 64, 150)
+_ROUTE_MAP_ROAD: Color = (70, 76, 82)
+_ROUTE_MAP_BORDER: Color = (110, 130, 150)
+
+
+def _route_endpoints(
+    flight: Flight | None,
+) -> tuple[float, float, float, float] | None:
+    """``(o_lat, o_lon, d_lat, d_lon)`` when both ends are known, else None."""
+    if flight is None:
+        return None
+    if (
+        flight.origin_lat is None
+        or flight.origin_lon is None
+        or flight.destination_lat is None
+        or flight.destination_lon is None
+    ):
+        return None
+    return (
+        flight.origin_lat,
+        flight.origin_lon,
+        flight.destination_lat,
+        flight.destination_lon,
+    )
+
+
+def _build_route_map_area(
+    flight: Flight,
+    endpoints: tuple[float, float, float, float],
+) -> Widget:
+    """Right-column 40x40 route preview keyed on origin → destination."""
+    o_lat, o_lon, d_lat, d_lon = endpoints
+    tile_data = default_fetcher().get(o_lat, o_lon, d_lat, d_lon)
+    zoom = int(tile_data.get("zoom", 4))
+    map_widget = RouteMap(
+        center_lat=flight.latitude,
+        center_lon=flight.longitude,
+        zoom=zoom,
+        tile_data=tile_data,
+        loading=False,
+        bg=_ROUTE_MAP_BG,
+        land_color=_ROUTE_MAP_LAND,
+        park_color=_ROUTE_MAP_PARK,
+        building_color=_ROUTE_MAP_BUILDING,
+        water_color=_ROUTE_MAP_WATER,
+        road_color=_ROUTE_MAP_ROAD,
+        border_color=_ROUTE_MAP_BORDER,
+        origin_lat=o_lat,
+        origin_lon=o_lon,
+        dest_lat=d_lat,
+        dest_lon=d_lon,
+        plane_lat=flight.latitude,
+        plane_lon=flight.longitude,
+    )
+    return Column(
+        gap=0,
+        sizes=[6, 40, 6],
+        children=[_spacer(), map_widget, _spacer()],
+    )
+
+
 def _build_radar_area(snapshot: AirSnapshot) -> Widget:
     radar = Radar(snapshot=snapshot)
     # Centre the radar vertically within the right column so the optical weight
@@ -651,6 +762,15 @@ def _build_radar_area(snapshot: AirSnapshot) -> Widget:
     )
 
 
+def _build_right_column(snapshot: AirSnapshot) -> Widget:
+    """Route preview when we know the endpoints, otherwise the radar."""
+    selected = snapshot.selected
+    endpoints = _route_endpoints(selected)
+    if selected is not None and endpoints is not None:
+        return _build_route_map_area(selected, endpoints)
+    return _build_radar_area(snapshot)
+
+
 def _build_top_row(snapshot: AirSnapshot) -> Widget:
     if snapshot.selected is None:
         left: Widget = _build_waiting_left(snapshot)
@@ -659,7 +779,7 @@ def _build_top_row(snapshot: AirSnapshot) -> Widget:
     return Row(
         gap=0,
         sizes=[LEFT_AREA_WIDTH, DIVIDER_THICKNESS, RADAR_AREA_WIDTH],
-        children=[left, _divider(), _build_radar_area(snapshot)],
+        children=[left, _divider(), _build_right_column(snapshot)],
     )
 
 

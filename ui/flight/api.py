@@ -105,8 +105,12 @@ class Flight:
     registration: str | None
     origin_iata: str | None
     origin_name: str | None
+    origin_lat: float | None
+    origin_lon: float | None
     destination_iata: str | None
     destination_name: str | None
+    destination_lat: float | None
+    destination_lon: float | None
     ground_speed_kt: float | None
     altitude_ft: float | None
     vertical_rate_fpm: float | None
@@ -409,10 +413,11 @@ def _apply_cached_route(
     flight_lat: float,
     flight_lon: float,
     track_deg: float | None = None,
-) -> tuple[str, str | None, str, str | None] | None:
+) -> tuple[str, str | None, float | None, float | None, str, str | None, float | None, float | None] | None:
     """Validate a cached route tuple against the current aircraft position.
 
-    Returns ``(origin_iata, origin_name, destination_iata, destination_name)``
+    Returns ``(origin_iata, origin_name, origin_lat, origin_lon,
+    destination_iata, destination_name, destination_lat, destination_lon)``
     when the route is present and plausible; ``None`` when fields are missing,
     coordinates don't parse, or the aircraft is clearly off-route (either by
     distance from the great circle or by track-direction mismatch).
@@ -431,6 +436,10 @@ def _apply_cached_route(
     ) = cached
     if not (o_iata and d_iata):
         return None
+    o_lat: float | None = None
+    o_lon: float | None = None
+    d_lat: float | None = None
+    d_lon: float | None = None
     # Plausibility check requires coords for both endpoints. Small airports
     # not in OpenFlights (Custer, etc.) come back with empty coord strings;
     # show the route on faith there — callsign-keyed FR24 lookups already
@@ -445,7 +454,7 @@ def _apply_cached_route(
             return None
         if not _route_is_plausible(flight_lat, flight_lon, o_lat, o_lon, d_lat, d_lon, track_deg):
             return None
-    return (o_iata, o_name or None, d_iata, d_name or None)
+    return (o_iata, o_name or None, o_lat, o_lon, d_iata, d_name or None, d_lat, d_lon)
 
 
 def _apply_true_airline(airline_icao: str | None, airline_name: str | None) -> tuple[str | None, str | None]:
@@ -503,6 +512,10 @@ def _build_flight(
     airline_icao, flight_number = _split_callsign(callsign)
     airline_name: str | None = None
     origin_iata = origin_name = destination_iata = destination_name = None
+    origin_lat: float | None = None
+    origin_lon: float | None = None
+    destination_lat: float | None = None
+    destination_lon: float | None = None
     route_verified = False
     dest_coords: tuple[float, float] | None = None
 
@@ -527,7 +540,16 @@ def _build_flight(
                 airline_icao = painted
             resolved = _apply_cached_route(cached, lat, lon, track_deg)
             if resolved is not None:
-                origin_iata, origin_name, destination_iata, destination_name = resolved
+                (
+                    origin_iata,
+                    origin_name,
+                    origin_lat,
+                    origin_lon,
+                    destination_iata,
+                    destination_name,
+                    destination_lat,
+                    destination_lon,
+                ) = resolved
                 route_verified = True
                 dest_coords = _dest_coords_from_cached(cached)
 
@@ -570,8 +592,12 @@ def _build_flight(
         registration=(ac.get("r") or None),
         origin_iata=origin_iata or None,
         origin_name=origin_name,
+        origin_lat=origin_lat,
+        origin_lon=origin_lon,
         destination_iata=destination_iata or None,
         destination_name=destination_name,
+        destination_lat=destination_lat,
+        destination_lon=destination_lon,
         ground_speed_kt=ground_speed_kt,
         altitude_ft=altitude_ft,
         vertical_rate_fpm=vertical_rate_fpm,
