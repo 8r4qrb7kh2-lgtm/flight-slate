@@ -372,7 +372,12 @@ _TYPE_NAME_SCROLL_PX_PER_S = 14.0
 
 
 def _build_type_name_text(text: str, max_width_px: int) -> Widget:
-    """Type-name line: clip when it fits, marquee when it doesn't."""
+    """Aircraft-type line: clip when it fits, marquee when it doesn't.
+
+    Sits on the dim-coloured bottom line of the details column, so the
+    text takes the LABEL colour to recede behind the brighter flight ID
+    on line 1 and the route bearing on line 2.
+    """
     width, _ = FONT_4X6.measure(text)
     if width <= max_width_px:
         return Text(
@@ -380,7 +385,7 @@ def _build_type_name_text(text: str, max_width_px: int) -> Widget:
             font=FONT_4X6,
             align="left",
             overflow="clip",
-            color=COLOR_VALUE,
+            color=COLOR_LABEL,
         )
     if _type_name_scroll.last_text != text:
         _type_name_scroll.last_text = text
@@ -393,17 +398,28 @@ def _build_type_name_text(text: str, max_width_px: int) -> Widget:
         overflow="overflow",
         overflow_offset=elapsed * _TYPE_NAME_SCROLL_PX_PER_S,
         overflow_gap=12,
-        color=COLOR_VALUE,
+        color=COLOR_LABEL,
     )
 
 
 def _build_details_column(flight: Flight) -> Widget:
+    """Layout (top to bottom):
+        line 1 — flight ID / call sign (bright, FONT_5X7)
+        line 2 — compass + distance from viewer (accent blue, FONT_5X7)
+        line 3 — long aircraft type, marquees if it doesn't fit (dim, FONT_4X6)
+    """
     type_text = _aircraft_type_display(flight)
     lines = Column(
         gap=3,
-        sizes=[6, 7, 6],
+        sizes=[7, 7, 6],
         children=[
-            _build_type_name_text(type_text, DETAILS_WIDTH - 2),
+            Text(
+                text=_flight_id_line(flight),
+                font=FONT_5X7,
+                align="left",
+                overflow="clip",
+                color=COLOR_VALUE,
+            ),
             Text(
                 text=_route_text(flight),
                 font=FONT_5X7,
@@ -411,13 +427,7 @@ def _build_details_column(flight: Flight) -> Widget:
                 overflow="clip",
                 color=COLOR_ACCENT,
             ),
-            Text(
-                text=_flight_id_line(flight),
-                font=FONT_4X6,
-                align="left",
-                overflow="clip",
-                color=COLOR_LABEL,
-            ),
+            _build_type_name_text(type_text, DETAILS_WIDTH - 2),
         ],
     )
     return Panel(padding=1, bg=colors.BLACK, border=None, child=lines)

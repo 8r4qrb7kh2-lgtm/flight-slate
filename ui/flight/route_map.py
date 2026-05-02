@@ -1,14 +1,20 @@
 """Tiny route-preview map widget with great-circle path overlay.
 
-Wraps :class:`ui.core.widgets.Map` to draw the same Mapbox vector tiles,
-then overlays an origin → destination great-circle path in white plus a
-small marker for the live aircraft position. The base map renders
-identically to the demo map page so colour treatment stays consistent.
+Renders a minimal Mapbox basemap — just water polygons, admin (state /
+country) borders, and a base land color — then overlays the origin →
+destination great-circle path in white plus a small marker for the
+live aircraft position.
+
+The expensive work (polygon fills + line interpolation across multiple
+tiles) is cached per route into an off-screen pixel buffer. Each frame
+just blits that buffer and re-stamps the moving plane dot, so the map
+no longer dominates render time at 30 Hz on a Pi 4.
 """
 
 from __future__ import annotations
 
 import math
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,8 +25,13 @@ from ui.core.widgets import Map
 from ui.flight.maps import lon_lat_to_world_tile
 
 
-# Ground-track segments. 32 is plenty for transcontinental hops; the line on
-# a 40-pixel map only ever shows a few-pixel arc at most.
+# Number of route_map renders to keep cached at once. Each is a small RGB
+# byte buffer (40x22 ≈ 2.6 KB), so a generous cache costs almost nothing.
+_RENDER_CACHE_MAX = 16
+
+# Path is a great circle resampled at this many segments. Always plenty for a
+# 40-pixel-wide widget — on short hops the line will visually collapse to one
+# or two pixels regardless of segment count.
 _PATH_SEGMENTS = 32
 
 
@@ -75,7 +86,7 @@ def _great_circle_points(
     return points
 
 
-def _draw_line_aa(
+def _draw_line(
     canvas: PixelCanvas,
     x0: int,
     y0: int,
@@ -83,7 +94,7 @@ def _draw_line_aa(
     y1: int,
     color: Color,
 ) -> None:
-    """1-pixel-wide Bresenham line. Local copy avoids importing private helpers."""
+    """1-pixel-wide Bresenham line."""
     dx = abs(x1 - x0)
     sx = 1 if x0 < x1 else -1
     dy = -abs(y1 - y0)
@@ -102,15 +113,315 @@ def _draw_line_aa(
             y0 += sy
 
 
+def _project_lat_lon(
+    lat: float,
+    lon: float,
+    bundle: dict[str, Any],
+    rect_w: int,
+    rect_h: int,
+    origin_x: float,
+    origin_y: float,
+) -> tuple[float, float]:
+    """Project lat/lon onto the cached-canvas pixel grid.
+
+    ``rect_w``/``rect_h`` are the (already pre-computed) drawable extents
+    minus 1; ``origin_x``/``origin_y`` are the pixel origin after centering
+    a non-square bundle inside a non-matching rect aspect.
+    """
+    zoom = int(bundle.get("zoom", 4))
+    wx, wy = lon_lat_to_world_tile(lon, lat, zoom)
+    min_world_x = float(bundle.get("min_world_x", 0.0))
+    min_world_y = float(bundle.get("min_world_y", 0.0))
+    world_width = max(1e-9, float(bundle.get("world_width", 1.0)))
+    world_height = max(1e-9, float(bundle.get("world_height", 1.0)))
+
+    content_w = max(1.0, float(rect_w))
+    content_h = max(1.0, float(rect_h))
+    scale = min(content_w / world_width, content_h / world_height)
+    return (
+        origin_x + ((wx - min_world_x) * scale),
+        origin_y + ((wy - min_world_y) * scale),
+    )
+
+
+def _projection_origin(
+    bundle: dict[str, Any],
+    rect_w: int,
+    rect_h: int,
+) -> tuple[float, float, float]:
+    """Top-left pixel of the bundle inside an `rect_w` × `rect_h` content area.
+
+    Returns (origin_x, origin_y, scale). The bundle may have a different
+    aspect than the rect — we centre on the shorter axis.
+    """
+    world_width = max(1e-9, float(bundle.get("world_width", 1.0)))
+    world_height = max(1e-9, float(bundle.get("world_height", 1.0)))
+    content_w = max(1.0, float(rect_w))
+    content_h = max(1.0, float(rect_h))
+    scale = min(content_w / world_width, content_h / world_height)
+    draw_w = world_width * scale
+    draw_h = world_height * scale
+    origin_x = (content_w - draw_w) * 0.5
+    origin_y = (content_h - draw_h) * 0.5
+    return origin_x, origin_y, scale
+
+
+_RENDER_CACHE: "OrderedDict[tuple, bytes]" = OrderedDict()
+
+
+def _cache_get(key: tuple) -> bytes | None:
+    cached = _RENDER_CACHE.get(key)
+    if cached is not None:
+        _RENDER_CACHE.move_to_end(key)
+    return cached
+
+
+def _cache_put(key: tuple, value: bytes) -> None:
+    _RENDER_CACHE[key] = value
+    _RENDER_CACHE.move_to_end(key)
+    while len(_RENDER_CACHE) > _RENDER_CACHE_MAX:
+        _RENDER_CACHE.popitem(last=False)
+
+
+def _bundle_signature(bundle: dict[str, Any]) -> tuple:
+    """Cheap, hashable fingerprint of the tile bundle.
+
+    The actual feature dicts are too deep to hash in a hot path, so we
+    summarize by zoom + each tile's (x, y, feature counts). Two bundles
+    with the same signature render to the same pixels for our purposes.
+    """
+    parts: list = [int(bundle.get("zoom", 0))]
+    for tile in bundle.get("tiles", []):
+        data = tile.get("data") or {}
+        water = (data.get("water") or {}).get("features") or []
+        admin = (data.get("admin") or {}).get("features") or []
+        parts.append((int(tile.get("x", 0)), int(tile.get("y", 0)), len(water), len(admin)))
+    return tuple(parts)
+
+
+def _draw_water_polygons(
+    target: PixelCanvas,
+    bundle: dict[str, Any],
+    color: Color,
+    origin_x: float,
+    origin_y: float,
+    rect_w: int,
+    rect_h: int,
+) -> None:
+    """Fill water/waterway polygons from each tile in the bundle.
+
+    Skips lone water LineStrings (small streams) — at 40-pixel resolution
+    they'd just speckle the map without conveying anything useful.
+    """
+    zoom = int(bundle.get("zoom", 4))
+    n = max(1, 2**zoom)
+    for tile in bundle.get("tiles", []):
+        data = tile.get("data") or {}
+        tile_x = int(tile.get("x_unwrapped", tile.get("x", 0)))
+        tile_y = int(tile.get("y", 0))
+        for layer_name in ("water", "waterway"):
+            layer = data.get(layer_name)
+            if not layer:
+                continue
+            extent = max(1, int(layer.get("extent", 4096)))
+            for feature in layer.get("features", []):
+                geometry = feature.get("geometry", {})
+                geom_type = geometry.get("type")
+                coords = geometry.get("coordinates", [])
+                rings: list[list[list[float]]] = []
+                if geom_type == "Polygon":
+                    rings = [coords]
+                elif geom_type == "MultiPolygon":
+                    rings = list(coords)
+                else:
+                    continue
+                for poly in rings:
+                    if not poly:
+                        continue
+                    outer_ring = [
+                        _tile_to_pixel(
+                            point, extent, tile_x, tile_y, bundle,
+                            rect_w, rect_h, origin_x, origin_y,
+                        )
+                        for point in poly[0]
+                    ]
+                    holes = [
+                        [
+                            _tile_to_pixel(
+                                point, extent, tile_x, tile_y, bundle,
+                                rect_w, rect_h, origin_x, origin_y,
+                            )
+                            for point in hole
+                        ]
+                        for hole in poly[1:]
+                    ]
+                    _fill_polygon(target, outer_ring, holes, color, rect_w, rect_h)
+
+
+def _draw_admin_lines(
+    target: PixelCanvas,
+    bundle: dict[str, Any],
+    color: Color,
+    origin_x: float,
+    origin_y: float,
+    rect_w: int,
+    rect_h: int,
+) -> None:
+    """Draw admin LineStrings (state and country boundaries) only."""
+    zoom = int(bundle.get("zoom", 4))
+    for tile in bundle.get("tiles", []):
+        data = tile.get("data") or {}
+        admin = data.get("admin")
+        if not admin:
+            continue
+        extent = max(1, int(admin.get("extent", 4096)))
+        tile_x = int(tile.get("x_unwrapped", tile.get("x", 0)))
+        tile_y = int(tile.get("y", 0))
+        for feature in admin.get("features", []):
+            props = feature.get("properties") or {}
+            if not _admin_visible(props, zoom):
+                continue
+            geometry = feature.get("geometry", {})
+            geom_type = geometry.get("type")
+            coords = geometry.get("coordinates", [])
+            if geom_type == "LineString":
+                _draw_line_in_tile(
+                    target, coords, extent, tile_x, tile_y, bundle, color,
+                    origin_x, origin_y, rect_w, rect_h,
+                )
+            elif geom_type == "MultiLineString":
+                for line in coords:
+                    _draw_line_in_tile(
+                        target, line, extent, tile_x, tile_y, bundle, color,
+                        origin_x, origin_y, rect_w, rect_h,
+                    )
+
+
+def _admin_visible(props: dict[str, Any], zoom: int) -> bool:
+    """Show country borders always; show state lines once we're zoomed in."""
+    raw = props.get("admin_level")
+    try:
+        level = int(str(raw))
+    except (TypeError, ValueError):
+        return True
+    if level <= 2:
+        return True
+    if level <= 4:
+        return zoom >= 4
+    return zoom >= 7
+
+
+def _tile_to_pixel(
+    point: list[float],
+    extent: int,
+    tile_x: int,
+    tile_y: int,
+    bundle: dict[str, Any],
+    rect_w: int,
+    rect_h: int,
+    origin_x: float,
+    origin_y: float,
+) -> tuple[float, float]:
+    denom = max(1, extent - 1)
+    local_x = min(max(point[0] / denom, 0.0), 1.0)
+    local_y = min(max(point[1] / denom, 0.0), 1.0)
+    world_x = tile_x + local_x
+    world_y = tile_y + local_y
+    min_world_x = float(bundle.get("min_world_x", 0.0))
+    min_world_y = float(bundle.get("min_world_y", 0.0))
+    world_width = max(1e-9, float(bundle.get("world_width", 1.0)))
+    world_height = max(1e-9, float(bundle.get("world_height", 1.0)))
+    content_w = max(1.0, float(rect_w))
+    content_h = max(1.0, float(rect_h))
+    scale = min(content_w / world_width, content_h / world_height)
+    return (
+        origin_x + ((world_x - min_world_x) * scale),
+        origin_y + ((world_y - min_world_y) * scale),
+    )
+
+
+def _draw_line_in_tile(
+    target: PixelCanvas,
+    line: list[list[float]],
+    extent: int,
+    tile_x: int,
+    tile_y: int,
+    bundle: dict[str, Any],
+    color: Color,
+    origin_x: float,
+    origin_y: float,
+    rect_w: int,
+    rect_h: int,
+) -> None:
+    if len(line) < 2:
+        return
+    pts = [
+        _tile_to_pixel(p, extent, tile_x, tile_y, bundle, rect_w, rect_h, origin_x, origin_y)
+        for p in line
+    ]
+    for i in range(len(pts) - 1):
+        x0, y0 = pts[i]
+        x1, y1 = pts[i + 1]
+        _draw_line(target, int(round(x0)), int(round(y0)), int(round(x1)), int(round(y1)), color)
+
+
+def _fill_polygon(
+    target: PixelCanvas,
+    outer: list[tuple[float, float]],
+    holes: list[list[tuple[float, float]]],
+    color: Color,
+    rect_w: int,
+    rect_h: int,
+) -> None:
+    if len(outer) < 3:
+        return
+    min_x = max(0, int(min(p[0] for p in outer)))
+    max_x = min(rect_w - 1, int(max(p[0] for p in outer)))
+    min_y = max(0, int(min(p[1] for p in outer)))
+    max_y = min(rect_h - 1, int(max(p[1] for p in outer)))
+    for y in range(min_y, max_y + 1):
+        for x in range(min_x, max_x + 1):
+            px = x + 0.5
+            py = y + 0.5
+            if not _point_in_ring(px, py, outer):
+                continue
+            if any(_point_in_ring(px, py, hole) for hole in holes):
+                continue
+            target.pixel(x, y, color)
+
+
+def _point_in_ring(px: float, py: float, ring: list[tuple[float, float]]) -> bool:
+    if len(ring) < 3:
+        return False
+    inside = False
+    j = len(ring) - 1
+    for i in range(len(ring)):
+        xi, yi = ring[i]
+        xj, yj = ring[j]
+        intersects = ((yi > py) != (yj > py)) and (
+            px < ((xj - xi) * (py - yi) / ((yj - yi) if (yj - yi) != 0 else 1e-9) + xi)
+        )
+        if intersects:
+            inside = not inside
+        j = i
+    return inside
+
+
+def _draw_dot(canvas: PixelCanvas, x: int, y: int, color: Color) -> None:
+    """2x2 dot anchored at (x, y) — visible at small sizes without smearing."""
+    canvas.pixel(x, y, color)
+    canvas.pixel(x + 1, y, color)
+    canvas.pixel(x, y + 1, color)
+    canvas.pixel(x + 1, y + 1, color)
+
+
 @dataclass
 class RouteMap(Map):
     """Map with a great-circle path and aircraft marker overlay.
 
-    Inherits from ``Map`` so the base land/water/road rendering is reused
-    verbatim. The ``draw`` override paints the route line on top of the
-    base layer and skips the loading spinner — when tiles are missing we
-    just show the bare bg colour with the line, which still tells the
-    viewer the route shape without waiting for the network.
+    Inherits ``Map``'s constructor for color/zoom field plumbing but does
+    its own simplified rendering (water + admin only) so the basemap is
+    legible at 40-pixel-wide and the per-frame cost stays bounded.
     """
 
     origin_lat: float | None = None
@@ -124,99 +435,148 @@ class RouteMap(Map):
     plane_color: Color = (255, 60, 60)
 
     def draw(self, canvas: PixelCanvas, rect: Rect) -> None:
-        super().draw(canvas, rect)
-        if rect.width <= 4 or rect.height <= 4:
+        if rect.width <= 2 or rect.height <= 2:
             return
 
-        bundle = self.tile_data if isinstance(self.tile_data, dict) else None
-        if bundle is None or "tiles" not in bundle:
+        # Outer 1-pixel bg frame so the content sits inset from the column edge.
+        canvas.rect(rect, fill=self.bg, outline=None)
+        content = Rect(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2)
+        if content.width <= 0 or content.height <= 0:
             return
+
         if (
             self.origin_lat is None
             or self.origin_lon is None
             or self.dest_lat is None
             or self.dest_lon is None
         ):
+            canvas.rect(content, fill=self.land_color, outline=None)
             return
 
-        # Match Map.draw's 1-pixel inset so the overlay sits inside the
-        # bg-colored border instead of overwriting it.
-        content = Rect(
-            rect.x + 1,
-            rect.y + 1,
-            max(0, rect.width - 2),
-            max(0, rect.height - 2),
-        )
-        if content.width <= 0 or content.height <= 0:
-            return
+        bundle = self.tile_data if isinstance(self.tile_data, dict) else None
+        cached_pixels = self._get_cached_base(content.width, content.height, bundle)
+        if cached_pixels is not None:
+            self._blit_cached(canvas, content, cached_pixels)
+        else:
+            canvas.rect(content, fill=self.land_color, outline=None)
 
-        path = _great_circle_points(
-            self.origin_lat,
-            self.origin_lon,
-            self.dest_lat,
-            self.dest_lon,
-        )
-        screen = [
-            self._project(lat, lon, content, bundle) for lat, lon in path
-        ]
+        # Plane dot is the only thing that moves between frames; draw it on
+        # top of the cached base every render.
+        if self.plane_lat is not None and self.plane_lon is not None and bundle is not None:
+            origin_x, origin_y, _ = _projection_origin(bundle, content.width - 1, content.height - 1)
+            px, py = _project_lat_lon(
+                self.plane_lat,
+                self.plane_lon,
+                bundle,
+                content.width - 1,
+                content.height - 1,
+                origin_x,
+                origin_y,
+            )
+            _draw_dot(
+                canvas,
+                content.x + int(round(px)),
+                content.y + int(round(py)),
+                self.plane_color,
+            )
 
-        with canvas.clip(content):
+    def _get_cached_base(
+        self,
+        width: int,
+        height: int,
+        bundle: dict[str, Any] | None,
+    ) -> bytes | None:
+        """Return cached base pixels (water + admin + path + endpoints).
+
+        Builds on cache miss using a fresh off-screen canvas, stores the
+        rendered bytes keyed by route + size + bundle fingerprint, and
+        returns them. Returns None only if the route lacks endpoints.
+        """
+        if (
+            self.origin_lat is None
+            or self.origin_lon is None
+            or self.dest_lat is None
+            or self.dest_lon is None
+        ):
+            return None
+
+        bundle_sig = _bundle_signature(bundle) if bundle is not None else ()
+        key = (
+            round(self.origin_lat, 3),
+            round(self.origin_lon, 3),
+            round(self.dest_lat, 3),
+            round(self.dest_lon, 3),
+            int(width),
+            int(height),
+            self.land_color,
+            self.water_color,
+            self.border_color,
+            self.line_color,
+            self.endpoint_color,
+            bundle_sig,
+        )
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+
+        base = PixelCanvas(width, height, self.land_color)
+        if bundle is not None and bundle.get("tiles"):
+            origin_x, origin_y, _ = _projection_origin(bundle, width - 1, height - 1)
+            _draw_water_polygons(
+                base, bundle, self.water_color, origin_x, origin_y,
+                width - 1, height - 1,
+            )
+            _draw_admin_lines(
+                base, bundle, self.border_color, origin_x, origin_y,
+                width - 1, height - 1,
+            )
+
+        if bundle is not None:
+            origin_x, origin_y, _ = _projection_origin(bundle, width - 1, height - 1)
+            path = _great_circle_points(
+                self.origin_lat, self.origin_lon,
+                self.dest_lat, self.dest_lon,
+            )
+            screen = [
+                _project_lat_lon(lat, lon, bundle, width - 1, height - 1, origin_x, origin_y)
+                for lat, lon in path
+            ]
             for index in range(len(screen) - 1):
                 x0, y0 = screen[index]
                 x1, y1 = screen[index + 1]
-                _draw_line_aa(
-                    canvas,
-                    int(round(x0)),
-                    int(round(y0)),
-                    int(round(x1)),
-                    int(round(y1)),
+                _draw_line(
+                    base,
+                    int(round(x0)), int(round(y0)),
+                    int(round(x1)), int(round(y1)),
                     self.line_color,
                 )
-
-            # Endpoint markers: 2x2 dots so they read as endpoints rather
-            # than as part of the route line itself.
             for lat, lon in (
                 (self.origin_lat, self.origin_lon),
                 (self.dest_lat, self.dest_lon),
             ):
-                ex, ey = self._project(lat, lon, content, bundle)
-                _draw_dot(canvas, int(round(ex)), int(round(ey)), self.endpoint_color)
+                ex, ey = _project_lat_lon(lat, lon, bundle, width - 1, height - 1, origin_x, origin_y)
+                _draw_dot(base, int(round(ex)), int(round(ey)), self.endpoint_color)
 
-            if self.plane_lat is not None and self.plane_lon is not None:
-                px, py = self._project(self.plane_lat, self.plane_lon, content, bundle)
-                _draw_dot(canvas, int(round(px)), int(round(py)), self.plane_color)
+        pixels = base.to_bytes()
+        _cache_put(key, pixels)
+        return pixels
 
     @staticmethod
-    def _project(
-        lat: float,
-        lon: float,
-        rect: Rect,
-        bundle: dict[str, Any],
-    ) -> tuple[float, float]:
-        """Match Map's tile-bundle projection so overlays land on the same pixels."""
-        zoom = int(bundle.get("zoom", 4))
-        wx, wy = lon_lat_to_world_tile(lon, lat, zoom)
-        min_world_x = float(bundle.get("min_world_x", 0.0))
-        min_world_y = float(bundle.get("min_world_y", 0.0))
-        world_width = max(1e-9, float(bundle.get("world_width", 1.0)))
-        world_height = max(1e-9, float(bundle.get("world_height", 1.0)))
-
-        content_w = max(1.0, float(rect.width - 1))
-        content_h = max(1.0, float(rect.height - 1))
-        scale = min(content_w / world_width, content_h / world_height)
-        draw_w = world_width * scale
-        draw_h = world_height * scale
-        origin_x = rect.x + ((content_w - draw_w) * 0.5)
-        origin_y = rect.y + ((content_h - draw_h) * 0.5)
-        return (
-            origin_x + ((wx - min_world_x) * scale),
-            origin_y + ((wy - min_world_y) * scale),
-        )
-
-
-def _draw_dot(canvas: PixelCanvas, x: int, y: int, color: Color) -> None:
-    """2x2 dot anchored at (x, y) — visible at small sizes without smearing."""
-    canvas.pixel(x, y, color)
-    canvas.pixel(x + 1, y, color)
-    canvas.pixel(x, y + 1, color)
-    canvas.pixel(x + 1, y + 1, color)
+    def _blit_cached(canvas: PixelCanvas, rect: Rect, pixels: bytes) -> None:
+        """Copy a cached RGB byte buffer back onto the live canvas, pixel by pixel."""
+        if rect.width <= 0 or rect.height <= 0:
+            return
+        expected = rect.width * rect.height * 3
+        if len(pixels) != expected:
+            return
+        with canvas.clip(rect):
+            row_stride = rect.width * 3
+            for y in range(rect.height):
+                row_base = y * row_stride
+                for x in range(rect.width):
+                    base = row_base + (x * 3)
+                    canvas.pixel(
+                        rect.x + x,
+                        rect.y + y,
+                        (pixels[base], pixels[base + 1], pixels[base + 2]),
+                    )
