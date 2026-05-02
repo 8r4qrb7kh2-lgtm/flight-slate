@@ -166,21 +166,56 @@ def _projection_origin(
     return origin_x, origin_y, scale
 
 
-_RENDER_CACHE: "OrderedDict[tuple, bytes]" = OrderedDict()
+# Each cache entry is a list of horizontal pixel runs:
+# ``(x, y, run_length, (r, g, b))``. Replaying via ``canvas.hline`` is a
+# few hundred native calls rather than the ~750 pixel writes that a raw
+# bytes buffer would require, which is what previously dragged the Pi's
+# refresh down to ~1 fps with a hero flight on screen.
+_RouteRun = tuple[int, int, int, "Color"]
+_RENDER_CACHE: "OrderedDict[tuple, list[_RouteRun]]" = OrderedDict()
 
 
-def _cache_get(key: tuple) -> bytes | None:
+def _cache_get(key: tuple) -> list[_RouteRun] | None:
     cached = _RENDER_CACHE.get(key)
     if cached is not None:
         _RENDER_CACHE.move_to_end(key)
     return cached
 
 
-def _cache_put(key: tuple, value: bytes) -> None:
+def _cache_put(key: tuple, value: list[_RouteRun]) -> None:
     _RENDER_CACHE[key] = value
     _RENDER_CACHE.move_to_end(key)
     while len(_RENDER_CACHE) > _RENDER_CACHE_MAX:
         _RENDER_CACHE.popitem(last=False)
+
+
+def _encode_runs(canvas: PixelCanvas, width: int, height: int) -> list[_RouteRun]:
+    """RGB byte buffer → list of (x, y, run_length, color) horizontal runs.
+
+    Adjacent same-coloured pixels in a row collapse to a single run, so a
+    typical 38×20 map (mostly green land + some blue water blob) goes
+    from 760 pixel writes to roughly 100–200 ``hline`` calls per replay.
+    """
+    pixels = canvas.to_bytes()
+    runs: list[_RouteRun] = []
+    for y in range(height):
+        row_base = y * width * 3
+        x = 0
+        while x < width:
+            base = row_base + x * 3
+            r = pixels[base]
+            g = pixels[base + 1]
+            b = pixels[base + 2]
+            run_start = x
+            x += 1
+            while x < width:
+                base2 = row_base + x * 3
+                if pixels[base2] == r and pixels[base2 + 1] == g and pixels[base2 + 2] == b:
+                    x += 1
+                else:
+                    break
+            runs.append((run_start, y, x - run_start, (r, g, b)))
+    return runs
 
 
 def _bundle_signature(bundle: dict[str, Any]) -> tuple:
@@ -199,6 +234,36 @@ def _bundle_signature(bundle: dict[str, Any]) -> tuple:
     return tuple(parts)
 
 
+def _projection_params(
+    bundle: dict[str, Any],
+    rect_w: int,
+    rect_h: int,
+    origin_x: float,
+    origin_y: float,
+) -> tuple[float, float, float, float]:
+    """Bundle projection collapsed to (offset_x, offset_y, scale, scale).
+
+    A vertex at world coords (wx, wy) maps to screen coords
+    ``(offset_x + wx * scale, offset_y + wy * scale)``. The two scales
+    are returned separately so callers can plug straight into the inner
+    loop without recomputing — although in practice they're equal because
+    we use ``min(...)`` in :func:`_projection_origin`.
+    """
+    min_world_x = float(bundle.get("min_world_x", 0.0))
+    min_world_y = float(bundle.get("min_world_y", 0.0))
+    world_width = max(1e-9, float(bundle.get("world_width", 1.0)))
+    world_height = max(1e-9, float(bundle.get("world_height", 1.0)))
+    content_w = max(1.0, float(rect_w))
+    content_h = max(1.0, float(rect_h))
+    scale = min(content_w / world_width, content_h / world_height)
+    return (
+        origin_x - min_world_x * scale,
+        origin_y - min_world_y * scale,
+        scale,
+        scale,
+    )
+
+
 def _draw_water_polygons(
     target: PixelCanvas,
     bundle: dict[str, Any],
@@ -208,54 +273,52 @@ def _draw_water_polygons(
     rect_w: int,
     rect_h: int,
 ) -> None:
-    """Fill water/waterway polygons from each tile in the bundle.
-
-    Skips lone water LineStrings (small streams) — at 40-pixel resolution
-    they'd just speckle the map without conveying anything useful.
+    """Fill water polygons. Skips lone waterway LineStrings — at 40-px
+    resolution they'd just speckle without conveying anything.
     """
-    zoom = int(bundle.get("zoom", 4))
-    n = max(1, 2**zoom)
+    base_x, base_y, scale_x, scale_y = _projection_params(
+        bundle, rect_w, rect_h, origin_x, origin_y,
+    )
     for tile in bundle.get("tiles", []):
         data = tile.get("data") or {}
         tile_x = int(tile.get("x_unwrapped", tile.get("x", 0)))
         tile_y = int(tile.get("y", 0))
-        for layer_name in ("water", "waterway"):
-            layer = data.get(layer_name)
-            if not layer:
+        layer = data.get("water")
+        if not layer:
+            continue
+        extent = max(1, int(layer.get("extent", 4096)))
+        inv_extent = 1.0 / extent
+        # Per-tile constants combine with per-bundle scale so each vertex
+        # only pays a multiply + an add.
+        tile_offset_x = base_x + tile_x * scale_x
+        tile_offset_y = base_y + tile_y * scale_y
+        sx = scale_x * inv_extent
+        sy = scale_y * inv_extent
+        for feature in layer.get("features", []):
+            geometry = feature.get("geometry", {})
+            geom_type = geometry.get("type")
+            coords = geometry.get("coordinates", [])
+            if geom_type == "Polygon":
+                rings = [coords]
+            elif geom_type == "MultiPolygon":
+                rings = list(coords)
+            else:
                 continue
-            extent = max(1, int(layer.get("extent", 4096)))
-            for feature in layer.get("features", []):
-                geometry = feature.get("geometry", {})
-                geom_type = geometry.get("type")
-                coords = geometry.get("coordinates", [])
-                rings: list[list[list[float]]] = []
-                if geom_type == "Polygon":
-                    rings = [coords]
-                elif geom_type == "MultiPolygon":
-                    rings = list(coords)
-                else:
+            for poly in rings:
+                if not poly:
                     continue
-                for poly in rings:
-                    if not poly:
-                        continue
-                    outer_ring = [
-                        _tile_to_pixel(
-                            point, extent, tile_x, tile_y, bundle,
-                            rect_w, rect_h, origin_x, origin_y,
-                        )
-                        for point in poly[0]
+                outer_ring = [
+                    (tile_offset_x + point[0] * sx, tile_offset_y + point[1] * sy)
+                    for point in poly[0]
+                ]
+                holes = [
+                    [
+                        (tile_offset_x + point[0] * sx, tile_offset_y + point[1] * sy)
+                        for point in hole
                     ]
-                    holes = [
-                        [
-                            _tile_to_pixel(
-                                point, extent, tile_x, tile_y, bundle,
-                                rect_w, rect_h, origin_x, origin_y,
-                            )
-                            for point in hole
-                        ]
-                        for hole in poly[1:]
-                    ]
-                    _fill_polygon(target, outer_ring, holes, color, rect_w, rect_h)
+                    for hole in poly[1:]
+                ]
+                _fill_polygon(target, outer_ring, holes, color, rect_w, rect_h)
 
 
 def _draw_admin_lines(
@@ -269,6 +332,9 @@ def _draw_admin_lines(
 ) -> None:
     """Draw admin LineStrings (state and country boundaries) only."""
     zoom = int(bundle.get("zoom", 4))
+    base_x, base_y, scale_x, scale_y = _projection_params(
+        bundle, rect_w, rect_h, origin_x, origin_y,
+    )
     for tile in bundle.get("tiles", []):
         data = tile.get("data") or {}
         admin = data.get("admin")
@@ -277,6 +343,11 @@ def _draw_admin_lines(
         extent = max(1, int(admin.get("extent", 4096)))
         tile_x = int(tile.get("x_unwrapped", tile.get("x", 0)))
         tile_y = int(tile.get("y", 0))
+        tile_offset_x = base_x + tile_x * scale_x
+        tile_offset_y = base_y + tile_y * scale_y
+        inv_extent = 1.0 / extent
+        sx = scale_x * inv_extent
+        sy = scale_y * inv_extent
         for feature in admin.get("features", []):
             props = feature.get("properties") or {}
             if not _admin_visible(props, zoom):
@@ -285,16 +356,34 @@ def _draw_admin_lines(
             geom_type = geometry.get("type")
             coords = geometry.get("coordinates", [])
             if geom_type == "LineString":
-                _draw_line_in_tile(
-                    target, coords, extent, tile_x, tile_y, bundle, color,
-                    origin_x, origin_y, rect_w, rect_h,
-                )
+                _draw_polyline(target, coords, tile_offset_x, tile_offset_y, sx, sy, color)
             elif geom_type == "MultiLineString":
                 for line in coords:
-                    _draw_line_in_tile(
-                        target, line, extent, tile_x, tile_y, bundle, color,
-                        origin_x, origin_y, rect_w, rect_h,
-                    )
+                    _draw_polyline(target, line, tile_offset_x, tile_offset_y, sx, sy, color)
+
+
+def _draw_polyline(
+    target: PixelCanvas,
+    points: list[list[float]],
+    base_x: float,
+    base_y: float,
+    sx: float,
+    sy: float,
+    color: Color,
+) -> None:
+    """Draw a polyline using a precomputed affine projection (no dict lookups)."""
+    if len(points) < 2:
+        return
+    px0, py0 = points[0]
+    x_prev = int(round(base_x + px0 * sx))
+    y_prev = int(round(base_y + py0 * sy))
+    for i in range(1, len(points)):
+        pxi, pyi = points[i]
+        x_next = int(round(base_x + pxi * sx))
+        y_next = int(round(base_y + pyi * sy))
+        _draw_line(target, x_prev, y_prev, x_next, y_next, color)
+        x_prev = x_next
+        y_prev = y_next
 
 
 def _admin_visible(props: dict[str, Any], zoom: int) -> bool:
@@ -311,60 +400,6 @@ def _admin_visible(props: dict[str, Any], zoom: int) -> bool:
     return zoom >= 7
 
 
-def _tile_to_pixel(
-    point: list[float],
-    extent: int,
-    tile_x: int,
-    tile_y: int,
-    bundle: dict[str, Any],
-    rect_w: int,
-    rect_h: int,
-    origin_x: float,
-    origin_y: float,
-) -> tuple[float, float]:
-    denom = max(1, extent - 1)
-    local_x = min(max(point[0] / denom, 0.0), 1.0)
-    local_y = min(max(point[1] / denom, 0.0), 1.0)
-    world_x = tile_x + local_x
-    world_y = tile_y + local_y
-    min_world_x = float(bundle.get("min_world_x", 0.0))
-    min_world_y = float(bundle.get("min_world_y", 0.0))
-    world_width = max(1e-9, float(bundle.get("world_width", 1.0)))
-    world_height = max(1e-9, float(bundle.get("world_height", 1.0)))
-    content_w = max(1.0, float(rect_w))
-    content_h = max(1.0, float(rect_h))
-    scale = min(content_w / world_width, content_h / world_height)
-    return (
-        origin_x + ((world_x - min_world_x) * scale),
-        origin_y + ((world_y - min_world_y) * scale),
-    )
-
-
-def _draw_line_in_tile(
-    target: PixelCanvas,
-    line: list[list[float]],
-    extent: int,
-    tile_x: int,
-    tile_y: int,
-    bundle: dict[str, Any],
-    color: Color,
-    origin_x: float,
-    origin_y: float,
-    rect_w: int,
-    rect_h: int,
-) -> None:
-    if len(line) < 2:
-        return
-    pts = [
-        _tile_to_pixel(p, extent, tile_x, tile_y, bundle, rect_w, rect_h, origin_x, origin_y)
-        for p in line
-    ]
-    for i in range(len(pts) - 1):
-        x0, y0 = pts[i]
-        x1, y1 = pts[i + 1]
-        _draw_line(target, int(round(x0)), int(round(y0)), int(round(x1)), int(round(y1)), color)
-
-
 def _fill_polygon(
     target: PixelCanvas,
     outer: list[tuple[float, float]],
@@ -373,38 +408,49 @@ def _fill_polygon(
     rect_w: int,
     rect_h: int,
 ) -> None:
+    """Even-odd scanline fill with hole support, one ``hline`` call per span.
+
+    Replaces the previous O(pixels × ring_size) point-in-polygon loop.
+    For our routes a single 38×20 cache fill is on the order of 100×
+    faster — bounding the cache-miss frame on the Pi to a few ms instead
+    of half a second.
+    """
     if len(outer) < 3:
         return
-    min_x = max(0, int(min(p[0] for p in outer)))
-    max_x = min(rect_w - 1, int(max(p[0] for p in outer)))
     min_y = max(0, int(min(p[1] for p in outer)))
-    max_y = min(rect_h - 1, int(max(p[1] for p in outer)))
+    max_y = min(rect_h - 1, int(math.ceil(max(p[1] for p in outer))))
+    if max_y < min_y:
+        return
+
+    rings: list[list[tuple[float, float]]] = [outer]
+    rings.extend(h for h in holes if len(h) >= 3)
+
     for y in range(min_y, max_y + 1):
-        for x in range(min_x, max_x + 1):
-            px = x + 0.5
-            py = y + 0.5
-            if not _point_in_ring(px, py, outer):
-                continue
-            if any(_point_in_ring(px, py, hole) for hole in holes):
-                continue
-            target.pixel(x, y, color)
-
-
-def _point_in_ring(px: float, py: float, ring: list[tuple[float, float]]) -> bool:
-    if len(ring) < 3:
-        return False
-    inside = False
-    j = len(ring) - 1
-    for i in range(len(ring)):
-        xi, yi = ring[i]
-        xj, yj = ring[j]
-        intersects = ((yi > py) != (yj > py)) and (
-            px < ((xj - xi) * (py - yi) / ((yj - yi) if (yj - yi) != 0 else 1e-9) + xi)
-        )
-        if intersects:
-            inside = not inside
-        j = i
-    return inside
+        py = y + 0.5
+        intersections: list[float] = []
+        for ring in rings:
+            n = len(ring)
+            j = n - 1
+            for i in range(n):
+                xi, yi = ring[i]
+                xj, yj = ring[j]
+                if (yi > py) != (yj > py):
+                    denom = yj - yi
+                    if denom == 0:
+                        denom = 1e-9
+                    intersections.append((xj - xi) * (py - yi) / denom + xi)
+                j = i
+        if len(intersections) < 2:
+            continue
+        intersections.sort()
+        # Pair up consecutive intersections into fill spans (even-odd rule).
+        for k in range(0, len(intersections) - 1, 2):
+            x_start = intersections[k]
+            x_end = intersections[k + 1]
+            ix_start = max(0, int(math.ceil(x_start - 0.5)))
+            ix_end = min(rect_w - 1, int(math.floor(x_end - 0.5)))
+            if ix_end >= ix_start:
+                target.hline(ix_start, y, ix_end - ix_start + 1, color)
 
 
 def _draw_dot(canvas: PixelCanvas, x: int, y: int, color: Color) -> None:
@@ -438,8 +484,16 @@ class RouteMap(Map):
         if rect.width <= 2 or rect.height <= 2:
             return
 
-        # Outer 1-pixel bg frame so the content sits inset from the column edge.
-        canvas.rect(rect, fill=self.bg, outline=None)
+        # 1-pixel bg frame: draw the perimeter only so we don't overdraw the
+        # whole content rect with bg just to overwrite it again with the
+        # cached map (~290 µs/frame on the Mac of pure overdraw).
+        right = rect.x + rect.width - 1
+        bottom = rect.y + rect.height - 1
+        canvas.hline(rect.x, rect.y, rect.width, self.bg)
+        canvas.hline(rect.x, bottom, rect.width, self.bg)
+        canvas.vline(rect.x, rect.y + 1, max(0, rect.height - 2), self.bg)
+        canvas.vline(right, rect.y + 1, max(0, rect.height - 2), self.bg)
+
         content = Rect(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2)
         if content.width <= 0 or content.height <= 0:
             return
@@ -454,9 +508,9 @@ class RouteMap(Map):
             return
 
         bundle = self.tile_data if isinstance(self.tile_data, dict) else None
-        cached_pixels = self._get_cached_base(content.width, content.height, bundle)
-        if cached_pixels is not None:
-            self._blit_cached(canvas, content, cached_pixels)
+        cached_runs = self._get_cached_base(content.width, content.height, bundle)
+        if cached_runs is not None:
+            _replay_runs(canvas, content, cached_runs)
         else:
             canvas.rect(content, fill=self.land_color, outline=None)
 
@@ -485,12 +539,13 @@ class RouteMap(Map):
         width: int,
         height: int,
         bundle: dict[str, Any] | None,
-    ) -> bytes | None:
-        """Return cached base pixels (water + admin + path + endpoints).
+    ) -> list[_RouteRun] | None:
+        """Return cached base RLE runs (water + admin + path + endpoints).
 
-        Builds on cache miss using a fresh off-screen canvas, stores the
-        rendered bytes keyed by route + size + bundle fingerprint, and
-        returns them. Returns None only if the route lacks endpoints.
+        Builds on cache miss using a fresh off-screen canvas, encodes the
+        result as horizontal pixel runs keyed by route + size + bundle
+        fingerprint, and returns them. Returns None only if the route
+        lacks endpoints.
         """
         if (
             self.origin_lat is None
@@ -557,26 +612,15 @@ class RouteMap(Map):
                 ex, ey = _project_lat_lon(lat, lon, bundle, width - 1, height - 1, origin_x, origin_y)
                 _draw_dot(base, int(round(ex)), int(round(ey)), self.endpoint_color)
 
-        pixels = base.to_bytes()
-        _cache_put(key, pixels)
-        return pixels
+        runs = _encode_runs(base, width, height)
+        _cache_put(key, runs)
+        return runs
 
-    @staticmethod
-    def _blit_cached(canvas: PixelCanvas, rect: Rect, pixels: bytes) -> None:
-        """Copy a cached RGB byte buffer back onto the live canvas, pixel by pixel."""
-        if rect.width <= 0 or rect.height <= 0:
-            return
-        expected = rect.width * rect.height * 3
-        if len(pixels) != expected:
-            return
-        with canvas.clip(rect):
-            row_stride = rect.width * 3
-            for y in range(rect.height):
-                row_base = y * row_stride
-                for x in range(rect.width):
-                    base = row_base + (x * 3)
-                    canvas.pixel(
-                        rect.x + x,
-                        rect.y + y,
-                        (pixels[base], pixels[base + 1], pixels[base + 2]),
-                    )
+
+def _replay_runs(canvas: PixelCanvas, rect: Rect, runs: list[_RouteRun]) -> None:
+    """Stamp a cached run list back onto the live canvas via ``hline`` calls."""
+    if rect.width <= 0 or rect.height <= 0:
+        return
+    with canvas.clip(rect):
+        for x, y, run_w, color in runs:
+            canvas.hline(rect.x + x, rect.y + y, run_w, color)
