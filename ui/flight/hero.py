@@ -211,14 +211,22 @@ def _aircraft_type_display(flight: Flight) -> str:
     return flight.icao24.upper() or "AIRCRAFT"
 
 
-def _registration_line(flight: Flight) -> str:
-    reg = (flight.registration or "").strip()
-    if reg:
-        return reg
-    plane = (flight.aircraft_type or "").strip()
-    if plane:
-        return plane
-    return flight.icao24.upper() or ""
+def _flight_id_line(flight: Flight) -> str:
+    """Airline call sign in 'XXX 1234' form, falling back to the raw callsign.
+
+    Returns the ICAO airline prefix joined to the flight number when both
+    are known (the boarding-pass-style identifier), the bare callsign as
+    received from ADS-B otherwise, and the hex ICAO24 if even that is
+    absent. This is the bottom-line identifier — registration is dropped.
+    """
+    airline = (flight.airline_icao or "").strip()
+    number = (flight.flight_number or "").strip()
+    if airline and number:
+        return f"{airline} {number}"
+    callsign = (flight.callsign or "").strip()
+    if callsign:
+        return callsign
+    return (flight.icao24 or "").upper()
 
 
 def _build_stat_cell(
@@ -404,7 +412,7 @@ def _build_details_column(flight: Flight) -> Widget:
                 color=COLOR_ACCENT,
             ),
             Text(
-                text=_registration_line(flight),
+                text=_flight_id_line(flight),
                 font=FONT_4X6,
                 align="left",
                 overflow="clip",
@@ -716,15 +724,14 @@ def _route_endpoints(
     )
 
 
-def _build_route_map_area(
+def _build_route_map_widget(
     flight: Flight,
     endpoints: tuple[float, float, float, float],
 ) -> Widget:
-    """Right-column 40x40 route preview keyed on origin → destination."""
     o_lat, o_lon, d_lat, d_lon = endpoints
     tile_data = default_fetcher().get(o_lat, o_lon, d_lat, d_lon)
     zoom = int(tile_data.get("zoom", 4))
-    map_widget = RouteMap(
+    return RouteMap(
         center_lat=flight.latitude,
         center_lon=flight.longitude,
         zoom=zoom,
@@ -744,31 +751,35 @@ def _build_route_map_area(
         plane_lat=flight.latitude,
         plane_lon=flight.longitude,
     )
-    return Column(
-        gap=0,
-        sizes=[6, 40, 6],
-        children=[_spacer(), map_widget, _spacer()],
-    )
-
-
-def _build_radar_area(snapshot: AirSnapshot) -> Widget:
-    radar = Radar(snapshot=snapshot)
-    # Centre the radar vertically within the right column so the optical weight
-    # balances the left-side content.
-    return Column(
-        gap=0,
-        sizes=[6, 40, 6],
-        children=[_spacer(), radar, _spacer()],
-    )
 
 
 def _build_right_column(snapshot: AirSnapshot) -> Widget:
-    """Route preview when we know the endpoints, otherwise the radar."""
+    """Right column: full-size radar by itself when no route, stacked
+    radar+map when a hero flight has both endpoints.
+
+    Layout for the stacked case in the 52-tall column:
+        2 px spacer
+        24 px radar (40 wide; widget centers a 24-px circle inside)
+        2 px spacer
+        22 px map preview
+        2 px spacer
+    """
     selected = snapshot.selected
     endpoints = _route_endpoints(selected)
-    if selected is not None and endpoints is not None:
-        return _build_route_map_area(selected, endpoints)
-    return _build_radar_area(snapshot)
+    if selected is None or endpoints is None:
+        return Column(
+            gap=0,
+            sizes=[6, 40, 6],
+            children=[_spacer(), Radar(snapshot=snapshot), _spacer()],
+        )
+
+    radar = Radar(snapshot=snapshot)
+    map_widget = _build_route_map_widget(selected, endpoints)
+    return Column(
+        gap=0,
+        sizes=[2, 24, 2, 22, 2],
+        children=[_spacer(), radar, _spacer(), map_widget, _spacer()],
+    )
 
 
 def _build_top_row(snapshot: AirSnapshot) -> Widget:
