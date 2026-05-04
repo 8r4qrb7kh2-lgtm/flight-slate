@@ -71,23 +71,33 @@ _IATA_TO_ICAO: dict[str, str] = {
 _N_NUMBER_OPERATOR_SUFFIXES: dict[str, str] = {
     "CC": "CCF",  # Cleveland Clinic Critical Care Transport
     "UH": "UNH",  # University Hospitals (in-house registrations, if any)
-    # University Hospitals contracts PHI Health for its medical-transport
-    # fleet, so the airframes broadcast N-numbers with the PHI ``PH``
-    # suffix (e.g. N325PH) rather than ``UH``. Map them to UNH so the
-    # display shows the UH logo for the missions the user actually sees.
-    "PH": "UNH",
     "MH": "MHL",  # MetroHealth (Metro Life Flight)
     "LF": "LFT",  # LifeFlight
     "MV": "STA",  # STAT MedEvac (e.g. N911MV)
 }
 
 
-def _n_number_suffix_match(callsign: str) -> str | None:
-    """Match an N-number callsign to a known operator by its 2-letter suffix.
+# Specific tail numbers that the suffix table can't disambiguate. PHI
+# Health (``PH`` suffix) flies under contract for multiple hospital
+# systems in Cleveland — the airframe registration alone doesn't tell
+# you which one this trip belongs to, so we list them out one by one.
+# Add more entries as new tails get observed; if a tail isn't in here
+# the resolver falls through to no logo, which is preferable to
+# guessing wrong about a med-evac mission.
+_N_NUMBER_TAIL_OVERRIDES: dict[str, str] = {
+    "N325PH": "UNH",  # University Hospitals med-evac (PHI airframe)
+}
 
-    Returns the pseudo-ICAO if the callsign looks like 'N' + digits + 2 letters
-    and the suffix is in our table; otherwise None. Prevents bogus matches on
-    non-N-number alpha strings.
+
+def _n_number_suffix_match(callsign: str) -> str | None:
+    """Match an N-number callsign to a known operator.
+
+    Tail-number overrides win over the generic suffix table — required
+    when the same suffix (e.g. ``PH`` for PHI airframes) is shared by
+    multiple operators contracting from the same fleet.
+
+    Returns the pseudo-ICAO if recognized, otherwise None. Validates the
+    N-number shape so non-N-number alpha strings can't slip through.
     """
     if not callsign.startswith("N") or len(callsign) < 4:
         return None
@@ -97,6 +107,9 @@ def _n_number_suffix_match(callsign: str) -> str | None:
     middle = callsign[1:-2]
     if not middle or not middle.isdigit():
         return None
+    override = _N_NUMBER_TAIL_OVERRIDES.get(callsign)
+    if override is not None:
+        return override
     return _N_NUMBER_OPERATOR_SUFFIXES.get(suffix)
 
 
