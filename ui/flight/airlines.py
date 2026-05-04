@@ -86,6 +86,7 @@ _N_NUMBER_OPERATOR_SUFFIXES: dict[str, str] = {
 # guessing wrong about a med-evac mission.
 _N_NUMBER_TAIL_OVERRIDES: dict[str, str] = {
     "N325PH": "UNH",  # University Hospitals med-evac (PHI airframe)
+    "N344PH": "UNH",  # University Hospitals med-evac (PHI airframe)
 }
 
 
