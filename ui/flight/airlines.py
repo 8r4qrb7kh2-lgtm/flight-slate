@@ -73,7 +73,11 @@ _N_NUMBER_OPERATOR_SUFFIXES: dict[str, str] = {
     "UH": "UNH",  # University Hospitals (in-house registrations, if any)
     "MH": "MHL",  # MetroHealth (Metro Life Flight)
     "LF": "LFT",  # LifeFlight
-    "MV": "STA",  # STAT MedEvac (e.g. N911MV)
+    # STAT MedEvac fleet uses N###ME (for "MedEvac") most commonly, with
+    # a smaller number on the older ``MV`` suffix. Both map to the same
+    # logo since they belong to the same operator.
+    "ME": "STA",
+    "MV": "STA",
 }
 
 
