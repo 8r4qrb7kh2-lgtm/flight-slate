@@ -70,7 +70,12 @@ _IATA_TO_ICAO: dict[str, str] = {
 # operator-meaningful letters at the end.
 _N_NUMBER_OPERATOR_SUFFIXES: dict[str, str] = {
     "CC": "CCF",  # Cleveland Clinic Critical Care Transport
-    "UH": "UNH",  # University Hospitals
+    "UH": "UNH",  # University Hospitals (in-house registrations, if any)
+    # University Hospitals contracts PHI Health for its medical-transport
+    # fleet, so the airframes broadcast N-numbers with the PHI ``PH``
+    # suffix (e.g. N325PH) rather than ``UH``. Map them to UNH so the
+    # display shows the UH logo for the missions the user actually sees.
+    "PH": "UNH",
     "MH": "MHL",  # MetroHealth (Metro Life Flight)
     "LF": "LFT",  # LifeFlight
     "MV": "STA",  # STAT MedEvac (e.g. N911MV)
