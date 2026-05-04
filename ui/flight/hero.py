@@ -34,6 +34,7 @@ from ui.flight.events import UpcomingEvent
 from ui.flight.fun_facts import ANIMAL_FUN_FACTS
 from ui.flight.api import AirSnapshot, Flight
 from ui.flight.maps import default_fetcher
+from ui.flight import path_history
 from ui.flight.route_map import RouteMap
 
 
@@ -712,6 +713,14 @@ _ROUTE_MAP_WATER: Color = (16, 64, 150)
 _ROUTE_MAP_ROAD: Color = (70, 76, 82)
 _ROUTE_MAP_BORDER: Color = (110, 130, 150)
 
+# The right-column map is rendered at 40 wide × 22 tall; with the 1-pixel
+# bg border the inner content area is 38×20, so we ask the tile fetcher
+# for a bbox that has the same aspect ratio. Without this, N-S routes
+# fetch a portrait bbox and leave green padding on either side.
+_ROUTE_MAP_CONTENT_W = 38
+_ROUTE_MAP_CONTENT_H = 20
+_ROUTE_MAP_ASPECT = _ROUTE_MAP_CONTENT_W / _ROUTE_MAP_CONTENT_H
+
 
 def _route_endpoints(
     flight: Flight | None,
@@ -739,8 +748,11 @@ def _build_route_map_widget(
     endpoints: tuple[float, float, float, float],
 ) -> Widget:
     o_lat, o_lon, d_lat, d_lon = endpoints
-    tile_data = default_fetcher().get(o_lat, o_lon, d_lat, d_lon)
+    tile_data = default_fetcher().get(
+        o_lat, o_lon, d_lat, d_lon, target_aspect=_ROUTE_MAP_ASPECT,
+    )
     zoom = int(tile_data.get("zoom", 4))
+    flown_path = path_history.get_path(flight.icao24)
     return RouteMap(
         center_lat=flight.latitude,
         center_lon=flight.longitude,
@@ -760,6 +772,7 @@ def _build_route_map_widget(
         dest_lon=d_lon,
         plane_lat=flight.latitude,
         plane_lon=flight.longitude,
+        path_points=flown_path,
     )
 
 

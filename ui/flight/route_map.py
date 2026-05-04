@@ -463,11 +463,15 @@ def _draw_dot(canvas: PixelCanvas, x: int, y: int, color: Color) -> None:
 
 @dataclass
 class RouteMap(Map):
-    """Map with a great-circle path and aircraft marker overlay.
+    """Map with a flown-path overlay and aircraft marker.
 
     Inherits ``Map``'s constructor for color/zoom field plumbing but does
     its own simplified rendering (water + admin only) so the basemap is
     legible at 40-pixel-wide and the per-frame cost stays bounded.
+
+    The cache holds the basemap (water + admin) only — origin/destination
+    dots, the flown path, and the live plane marker are stamped on top
+    each frame so a new track point doesn't trigger a multi-tile rebuild.
     """
 
     origin_lat: float | None = None
@@ -476,6 +480,11 @@ class RouteMap(Map):
     dest_lon: float | None = None
     plane_lat: float | None = None
     plane_lon: float | None = None
+    # Ordered list of ``(lat, lon)`` points the aircraft has been observed
+    # at, oldest first. Used for the flown-path polyline; an empty list
+    # falls back to a great-circle interpolation between origin and the
+    # current plane position.
+    path_points: list[tuple[float, float]] | None = None
     line_color: Color = colors.WHITE
     endpoint_color: Color = colors.WHITE
     plane_color: Color = (255, 60, 60)
@@ -508,66 +517,96 @@ class RouteMap(Map):
             return
 
         bundle = self.tile_data if isinstance(self.tile_data, dict) else None
-        cached_runs = self._get_cached_base(content.width, content.height, bundle)
-        if cached_runs is not None:
-            _replay_runs(canvas, content, cached_runs)
+        cached_basemap = self._get_cached_basemap(content.width, content.height, bundle)
+        if cached_basemap is not None:
+            _replay_runs(canvas, content, cached_basemap)
         else:
             canvas.rect(content, fill=self.land_color, outline=None)
 
-        # Plane dot is the only thing that moves between frames; draw it on
-        # top of the cached base every render.
-        if self.plane_lat is not None and self.plane_lon is not None and bundle is not None:
-            origin_x, origin_y, _ = _projection_origin(bundle, content.width - 1, content.height - 1)
-            px, py = _project_lat_lon(
-                self.plane_lat,
-                self.plane_lon,
-                bundle,
-                content.width - 1,
-                content.height - 1,
-                origin_x,
-                origin_y,
-            )
-            _draw_dot(
-                canvas,
-                content.x + int(round(px)),
-                content.y + int(round(py)),
-                self.plane_color,
-            )
+        if bundle is None:
+            return
 
-    def _get_cached_base(
+        ox, oy, _ = _projection_origin(bundle, content.width - 1, content.height - 1)
+
+        def project(lat: float, lon: float) -> tuple[int, int]:
+            px, py = _project_lat_lon(
+                lat, lon, bundle, content.width - 1, content.height - 1, ox, oy,
+            )
+            return content.x + int(round(px)), content.y + int(round(py))
+
+        # Build the polyline: known origin → great-circle gap up to the
+        # first observed point → linear segments through the recorded
+        # samples → current plane position. When we've never seen this
+        # aircraft (path_points empty), fall back to a single great
+        # circle from origin to current position so something is shown.
+        with canvas.clip(content):
+            self._draw_path(canvas, project)
+            ox_screen = project(self.origin_lat, self.origin_lon)
+            dx_screen = project(self.dest_lat, self.dest_lon)
+            _draw_dot(canvas, ox_screen[0], ox_screen[1], self.endpoint_color)
+            _draw_dot(canvas, dx_screen[0], dx_screen[1], self.endpoint_color)
+
+            if self.plane_lat is not None and self.plane_lon is not None:
+                px, py = project(self.plane_lat, self.plane_lon)
+                _draw_dot(canvas, px, py, self.plane_color)
+
+    def _draw_path(self, canvas: PixelCanvas, project: Any) -> None:
+        """Connect origin → flown samples → current plane position.
+
+        ``project`` is a closure that maps (lat, lon) → integer pixel
+        coords on the live canvas. The caller has already pushed a clip
+        rect for the map content area.
+        """
+        if self.origin_lat is None or self.origin_lon is None:
+            return
+        observed = list(self.path_points or [])
+
+        # If we have no breadcrumbs yet, stub in the current plane
+        # position so the line is at least one segment long.
+        if not observed and self.plane_lat is not None and self.plane_lon is not None:
+            observed.append((self.plane_lat, self.plane_lon))
+
+        if not observed:
+            return
+
+        # Great-circle interpolation from the origin to the first
+        # observed sample bridges the part of the flight we missed.
+        first_lat, first_lon = observed[0]
+        gap_pts = _great_circle_points(
+            self.origin_lat, self.origin_lon, first_lat, first_lon,
+        )
+        # ``gap_pts`` ends at ``observed[0]``, so skip that index in
+        # observed to avoid drawing a zero-length segment.
+        polyline_pts = gap_pts + observed[1:]
+
+        prev: tuple[int, int] | None = None
+        for lat, lon in polyline_pts:
+            x, y = project(lat, lon)
+            if prev is not None and (x != prev[0] or y != prev[1]):
+                _draw_line(canvas, prev[0], prev[1], x, y, self.line_color)
+            prev = (x, y)
+
+    def _get_cached_basemap(
         self,
         width: int,
         height: int,
         bundle: dict[str, Any] | None,
     ) -> list[_RouteRun] | None:
-        """Return cached base RLE runs (water + admin + path + endpoints).
+        """Return cached basemap RLE runs (water + admin only).
 
-        Builds on cache miss using a fresh off-screen canvas, encodes the
-        result as horizontal pixel runs keyed by route + size + bundle
-        fingerprint, and returns them. Returns None only if the route
-        lacks endpoints.
+        The path and endpoints are drawn each frame so adding a new
+        breadcrumb doesn't invalidate the basemap cache. ``bundle`` may
+        be tile-less while tiles are still loading — in that case we
+        return runs covering a solid land-coloured rect so the live
+        path can still draw on top of something.
         """
-        if (
-            self.origin_lat is None
-            or self.origin_lon is None
-            or self.dest_lat is None
-            or self.dest_lon is None
-        ):
-            return None
-
         bundle_sig = _bundle_signature(bundle) if bundle is not None else ()
         key = (
-            round(self.origin_lat, 3),
-            round(self.origin_lon, 3),
-            round(self.dest_lat, 3),
-            round(self.dest_lon, 3),
             int(width),
             int(height),
             self.land_color,
             self.water_color,
             self.border_color,
-            self.line_color,
-            self.endpoint_color,
             bundle_sig,
         )
         cached = _cache_get(key)
@@ -585,32 +624,6 @@ class RouteMap(Map):
                 base, bundle, self.border_color, origin_x, origin_y,
                 width - 1, height - 1,
             )
-
-        if bundle is not None:
-            origin_x, origin_y, _ = _projection_origin(bundle, width - 1, height - 1)
-            path = _great_circle_points(
-                self.origin_lat, self.origin_lon,
-                self.dest_lat, self.dest_lon,
-            )
-            screen = [
-                _project_lat_lon(lat, lon, bundle, width - 1, height - 1, origin_x, origin_y)
-                for lat, lon in path
-            ]
-            for index in range(len(screen) - 1):
-                x0, y0 = screen[index]
-                x1, y1 = screen[index + 1]
-                _draw_line(
-                    base,
-                    int(round(x0)), int(round(y0)),
-                    int(round(x1)), int(round(y1)),
-                    self.line_color,
-                )
-            for lat, lon in (
-                (self.origin_lat, self.origin_lon),
-                (self.dest_lat, self.dest_lon),
-            ):
-                ex, ey = _project_lat_lon(lat, lon, bundle, width - 1, height - 1, origin_x, origin_y)
-                _draw_dot(base, int(round(ex)), int(round(ey)), self.endpoint_color)
 
         runs = _encode_runs(base, width, height)
         _cache_put(key, runs)

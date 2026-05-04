@@ -158,6 +158,63 @@ def _select_zoom(
     return best
 
 
+def _expand_bbox_to_aspect(
+    bbox: tuple[float, float, float, float],
+    target_aspect: float,
+    zoom: int,
+) -> tuple[float, float, float, float]:
+    """Pad the bbox in lat or lon so its world-tile shape matches ``target_aspect``.
+
+    The route alone often produces a portrait bbox (e.g. CLT → CLE goes
+    far more north-south than east-west). When that gets rendered into a
+    landscape rect it leaves bald green padding on the sides. Expanding
+    the bbox here means we fetch enough tiles to fill the whole rect.
+
+    ``target_aspect`` is rect_w / rect_h. The expansion happens in world
+    tile coordinates so the fix-up is correct under Mercator distortion.
+    """
+    if target_aspect <= 0:
+        return bbox
+    min_lat, min_lon, max_lat, max_lon = bbox
+    x_min, y_min = lon_lat_to_world_tile(min_lon, max_lat, zoom)
+    x_max, y_max = lon_lat_to_world_tile(max_lon, min_lat, zoom)
+    world_w = max(1e-9, x_max - x_min)
+    world_h = max(1e-9, y_max - y_min)
+    current_aspect = world_w / world_h
+    if current_aspect < target_aspect:
+        # Portrait → widen lon span until aspect matches.
+        new_w = world_h * target_aspect
+        pad = (new_w - world_w) * 0.5
+        x_min -= pad
+        x_max += pad
+    elif current_aspect > target_aspect:
+        # Landscape → widen lat span.
+        new_h = world_w / target_aspect
+        pad = (new_h - world_h) * 0.5
+        y_min -= pad
+        y_max += pad
+    else:
+        return bbox
+
+    # Convert the world-tile-coord box back to lat/lon. Inverting the
+    # web-mercator y → lat is the only fiddly bit; lon is linear.
+    n = 2**zoom
+    new_min_lon = (x_min / n) * 360.0 - 180.0
+    new_max_lon = (x_max / n) * 360.0 - 180.0
+    new_max_lat = math.degrees(
+        math.atan(math.sinh(math.pi * (1.0 - 2.0 * y_min / n)))
+    )
+    new_min_lat = math.degrees(
+        math.atan(math.sinh(math.pi * (1.0 - 2.0 * y_max / n)))
+    )
+    return (
+        max(-85.0, new_min_lat),
+        new_min_lon,
+        min(85.0, new_max_lat),
+        new_max_lon,
+    )
+
+
 def build_route_view(
     origin_lat: float,
     origin_lon: float,
@@ -166,13 +223,23 @@ def build_route_view(
     *,
     plane_lat: float | None = None,
     plane_lon: float | None = None,
+    target_aspect: float | None = None,
 ) -> tuple[int, tuple[float, float, float, float]]:
-    """Compute (zoom, padded_bbox) for the route — used to key tile cache."""
+    """Compute (zoom, padded_bbox) for the route — used to key tile cache.
+
+    When ``target_aspect`` is supplied (rect_w / rect_h), the bbox is
+    expanded so the fetched tile coverage matches the rect's shape.
+    """
     points: list[tuple[float, float]] = [(origin_lat, origin_lon), (dest_lat, dest_lon)]
     if plane_lat is not None and plane_lon is not None:
         points.append((plane_lat, plane_lon))
     bbox = _route_bbox(points)
     zoom = _select_zoom(bbox)
+    if target_aspect is not None:
+        bbox = _expand_bbox_to_aspect(bbox, target_aspect, zoom)
+        # Re-pick zoom; expanded bbox might exceed the previous tile cap.
+        zoom = _select_zoom(bbox)
+        bbox = _expand_bbox_to_aspect(bbox, target_aspect, zoom)
     return zoom, bbox
 
 
@@ -184,6 +251,7 @@ def fetch_route_tiles(
     *,
     plane_lat: float | None = None,
     plane_lon: float | None = None,
+    target_aspect: float | None = None,
 ) -> dict[str, Any]:
     """Synchronously assemble the multi-tile bundle covering the route.
 
@@ -198,6 +266,7 @@ def fetch_route_tiles(
         dest_lon,
         plane_lat=plane_lat,
         plane_lon=plane_lon,
+        target_aspect=target_aspect,
     )
     min_lat, min_lon, max_lat, max_lon = bbox
     x_min_w, y_min_w = lon_lat_to_world_tile(min_lon, max_lat, zoom)
@@ -242,6 +311,7 @@ def empty_route_view(
     *,
     plane_lat: float | None = None,
     plane_lon: float | None = None,
+    target_aspect: float | None = None,
 ) -> dict[str, Any]:
     """Tile-less bundle with just the projection metadata.
 
@@ -258,6 +328,7 @@ def empty_route_view(
         dest_lon,
         plane_lat=plane_lat,
         plane_lon=plane_lon,
+        target_aspect=target_aspect,
     )
     min_lat, min_lon, max_lat, max_lon = bbox
     x_min_w, y_min_w = lon_lat_to_world_tile(min_lon, max_lat, zoom)
@@ -300,19 +371,25 @@ class RouteMapFetcher:
         origin_lon: float,
         dest_lat: float,
         dest_lon: float,
+        *,
+        target_aspect: float | None = None,
     ) -> dict[str, Any]:
         """Return a bundle for the route — tiles when ready, placeholder otherwise.
 
         The route key is rounded to ~1 km so tiny aircraft-driven shifts
         don't invalidate the cache. The plane position is *not* part of
         the key — we want the same bundle reused as the plane moves so the
-        map doesn't reload mid-flight.
+        map doesn't reload mid-flight. ``target_aspect`` rounds into the
+        key at 2 decimal places, which keeps a consistent rect shape from
+        re-fetching tiles unnecessarily.
         """
+        aspect_key = round(target_aspect, 2) if target_aspect is not None else None
         key = (
             round(origin_lat, 2),
             round(origin_lon, 2),
             round(dest_lat, 2),
             round(dest_lon, 2),
+            aspect_key,
         )
 
         with self._lock:
@@ -346,11 +423,15 @@ class RouteMapFetcher:
                     origin_lon,
                     dest_lat,
                     dest_lon,
+                    target_aspect=target_aspect,
                 )
 
         # Fallback while tiles are loading or after a permanent failure: a
         # bundle with the right projection but no basemap features.
-        return empty_route_view(origin_lat, origin_lon, dest_lat, dest_lon)
+        return empty_route_view(
+            origin_lat, origin_lon, dest_lat, dest_lon,
+            target_aspect=target_aspect,
+        )
 
 
 _default_fetcher: RouteMapFetcher | None = None

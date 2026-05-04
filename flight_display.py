@@ -37,7 +37,7 @@ from typing import Any
 from standard_led_matrix_interface import RGBMatrixOptions
 from ui import App
 from ui.flight import AirSnapshot, PingHistory, Region, build_flight_hero_page, fetch_air_snapshot
-from ui.flight import events, inside_temp_server, nest, weather
+from ui.flight import events, inside_temp_server, nest, path_history, weather
 
 
 TARGET_REFRESH_HZ = 30
@@ -172,6 +172,8 @@ def _poll_fetch_result(state: FlightState) -> bool:
     state.last_error = None
     state.ever_succeeded = True
     state.snapshot = state.history.decorate(result)
+    # Drop a breadcrumb for the route-map's flown-path overlay.
+    path_history.record(state.snapshot)
     return True
 
 
