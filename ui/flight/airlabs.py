@@ -33,6 +33,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
@@ -50,6 +51,12 @@ _TAIL_NUMBER_RE = re.compile(r"^N\d+[A-Z]*$")
 # (callsign, dest_iata) → (cached_at, scheduled_arrival_utc_iso)
 _known: dict[tuple[str, str], tuple[float, str]] = {}
 _negative: dict[tuple[str, str], float] = {}
+
+# Wall-clock timestamp (epoch seconds) before which AirLabs has told us the
+# quota is exhausted. Skipping the network call entirely while blocked saves
+# the one extra call per (callsign, dest_iata) miss we'd otherwise spend
+# rediscovering the same error every negative-cache TTL.
+_blocked_until_wall: float | None = None
 
 
 def _normalize_callsign(callsign: str) -> str:
@@ -110,6 +117,41 @@ def _select_instance(items: list[dict[str, Any]]) -> dict[str, Any] | None:
     return None
 
 
+def _next_quota_reset_utc(error_code: str) -> datetime:
+    """Best-effort UTC time at which the named AirLabs limit refills.
+
+    Monthly limits reset at the start of the next UTC month; daily limits at
+    the next UTC midnight. Anything else falls back to a 24-hour back-off,
+    which is conservative but bounded.
+    """
+    now = datetime.now(timezone.utc)
+    if "month" in error_code:
+        if now.month == 12:
+            return now.replace(
+                year=now.year + 1, month=1, day=1,
+                hour=0, minute=0, second=0, microsecond=0,
+            )
+        return now.replace(
+            month=now.month + 1, day=1,
+            hour=0, minute=0, second=0, microsecond=0,
+        )
+    if "day" in error_code:  # matches "daily_limit_exceeded" and similar
+        return (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0,
+        )
+    return now + timedelta(hours=24)
+
+
+def _mark_quota_blocked(error_code: str) -> None:
+    global _blocked_until_wall
+    reset = _next_quota_reset_utc(error_code)
+    _blocked_until_wall = reset.timestamp()
+    print(
+        f"[flight-slate] airlabs quota: {error_code}; backing off until {reset.isoformat()}",
+        flush=True,
+    )
+
+
 def get_scheduled_arrival(
     callsign: str, *, dest_iata: str | None = None
 ) -> str | None:
@@ -139,6 +181,9 @@ def get_scheduled_arrival(
     if neg_ts is not None and (now - neg_ts) < _NEGATIVE_TTL_S:
         return None
 
+    if _blocked_until_wall is not None and time.time() < _blocked_until_wall:
+        return None
+
     api_key = os.environ.get("AIRLABS_API_KEY", "").strip()
     if not api_key:
         return None
@@ -158,6 +203,16 @@ def get_scheduled_arrival(
             data = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError):
         return None  # transient — don't poison the cache, retry next snapshot
+
+    # Quota exhaustion arrives as a top-level ``error`` rather than a
+    # transport-level failure, so we have to inspect the JSON body.
+    if isinstance(data, dict):
+        error = data.get("error")
+        if isinstance(error, dict):
+            code = str(error.get("code") or "")
+            if "limit_exceeded" in code:
+                _mark_quota_blocked(code)
+                return None
 
     payload = data.get("response") if isinstance(data, dict) else None
     items = payload if isinstance(payload, list) else []
