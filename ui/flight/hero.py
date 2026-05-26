@@ -161,29 +161,26 @@ def _format_ground_speed(speed_kt: float | None) -> str:
     return f"{int(round(speed_kt))}"
 
 
-def _format_elapsed_remaining(flight: Flight) -> str:
-    """Compact "E elapsed, R remaining" hours readout for the bottom-left stat.
+def _compute_elapsed_remaining_hours(flight: Flight) -> tuple[float, float] | None:
+    """Return ``(elapsed_h, remaining_h)`` decimal-hour pair, or None.
 
-    Both values are decimal hours (one fractional digit). Uses scheduled
-    departure as t0 because that's all AirLabs supplies — within a few
-    minutes of actual takeoff for non-delayed flights. ``eta_utc`` is the
-    locally-computed ETA from current position + ground speed, so remaining
-    decreases smoothly as the flight progresses. Negative deltas are
-    clamped to zero. Returns ``"--"`` when either timestamp is unknown.
-
-    The cell is 43 px wide and the string is rendered in FONT_4X6
-    (see ``_build_value_cell_4x6``); ``"E1.2, R0.8"`` measures 41 px and
-    fits with one decimal hour on each side.
+    Uses scheduled departure as t0 because that's all AirLabs supplies —
+    within a few minutes of actual takeoff for non-delayed flights.
+    ``eta_utc`` is the locally-computed ETA from current position +
+    ground speed, so remaining decreases smoothly as the flight
+    progresses. Negative deltas are clamped to zero. Returns ``None``
+    when either timestamp is unknown so the renderer can fall back to a
+    plain ``"--"`` placeholder.
     """
     from datetime import datetime, timezone
     dep_dt = _parse_iso_utc(flight.scheduled_departure_utc)
     eta_dt = _parse_iso_utc(flight.eta_utc)
     if dep_dt is None or eta_dt is None:
-        return "--"
+        return None
     now = datetime.now(timezone.utc)
     elapsed_h = max(0.0, (now - dep_dt).total_seconds() / 3600.0)
     remaining_h = max(0.0, (eta_dt - now).total_seconds() / 3600.0)
-    return f"E{elapsed_h:.1f}, R{remaining_h:.1f}"
+    return (elapsed_h, remaining_h)
 
 
 _COMPASS_POINTS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
@@ -340,23 +337,64 @@ def _build_value_cell(value: str, color: Color, cell_w: int) -> Widget:
     )
 
 
-def _build_value_cell_4x6(value: str, color: Color, cell_w: int) -> Widget:
-    """Value-only cell rendered in FONT_4X6 — used for compound strings that
-    don't fit the cell at FONT_5X7 (e.g. "E1.2, R0.8"). 9-tall cell with a
-    6-tall glyph: 2 px top pad, 6 px text row, 1 px bottom pad.
+def _build_elapsed_remaining_cell(flight: Flight, cell_w: int) -> Widget:
+    """Bottom-left stat cell: "E<elapsed> R<remaining>" in decimal hours.
+
+    Letters "E" and "R" take the accent blue used by every other stat
+    label (S, A, L, ...); the numbers take the value white. Rendered in
+    FONT_4X6 so the compound string fits the 43-px cell, with a single
+    space-width gap between the elapsed value and the next label. When
+    we don't have departure or ETA data, falls back to a plain "--".
     """
-    value_w = min(cell_w, FONT_4X6.measure(value)[0])
-    left_pad = max(0, (cell_w - value_w) // 2)
-    right_pad = max(0, cell_w - value_w - left_pad)
-    centered = Row(
+    pair = _compute_elapsed_remaining_hours(flight)
+    if pair is None:
+        # Re-use the value-only cell so the placeholder renders at the
+        # same baseline as the other stats' "--" missing-data state.
+        return _build_value_cell("--", COLOR_VALUE, cell_w)
+    elapsed_h, remaining_h = pair
+
+    e_label, r_label = "E", "R"
+    e_value = f"{elapsed_h:.1f}"
+    r_value = f"{remaining_h:.1f}"
+
+    e_label_w, _ = FONT_4X6.measure(e_label)
+    e_value_w, _ = FONT_4X6.measure(e_value)
+    r_label_w, _ = FONT_4X6.measure(r_label)
+    r_value_w, _ = FONT_4X6.measure(r_value)
+
+    # Bare 1-px kerning between a label and its value (matches the
+    # font's natural inter-glyph spacing); a wider gap between the two
+    # halves visually separates "E1.2" from "R0.8".
+    intra_gap = 1
+    inter_gap = 4
+
+    content_w = (
+        e_label_w + intra_gap + e_value_w + inter_gap
+        + r_label_w + intra_gap + r_value_w
+    )
+    content_w = min(content_w, cell_w)
+    left_pad = max(0, (cell_w - content_w) // 2)
+    right_pad = max(0, cell_w - content_w - left_pad)
+
+    content = Row(
         gap=0,
-        sizes=[left_pad, value_w, right_pad],
+        sizes=[e_label_w, intra_gap, e_value_w, inter_gap, r_label_w, intra_gap, r_value_w],
         children=[
+            Text(text=e_label, font=FONT_4X6, align="left", overflow="clip", color=COLOR_ACCENT),
             _spacer(),
-            Text(text=value, font=FONT_4X6, align="left", overflow="clip", color=color),
+            Text(text=e_value, font=FONT_4X6, align="left", overflow="clip", color=COLOR_VALUE),
             _spacer(),
+            Text(text=r_label, font=FONT_4X6, align="left", overflow="clip", color=COLOR_ACCENT),
+            _spacer(),
+            Text(text=r_value, font=FONT_4X6, align="left", overflow="clip", color=COLOR_VALUE),
         ],
     )
+    centered = Row(
+        gap=0,
+        sizes=[left_pad, content_w, right_pad],
+        children=[_spacer(), content, _spacer()],
+    )
+    # 9-tall cell with a 6-tall glyph: 2 px top pad, 6 px text row, 1 px bottom pad.
     return Column(
         gap=0,
         sizes=[2, 6, 1],
@@ -385,7 +423,7 @@ def _build_stats_row(flight: Flight) -> Widget:
         _build_stat_cell("A", _format_altitude(flight.altitude_ft), STAT_CELL_W_RIGHT),
     )
     bottom = _subrow(
-        _build_value_cell_4x6(_format_elapsed_remaining(flight), COLOR_VALUE, STAT_CELL_W_LEFT),
+        _build_elapsed_remaining_cell(flight, STAT_CELL_W_LEFT),
         delta_cell,
     )
     return Column(
