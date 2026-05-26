@@ -161,14 +161,29 @@ def _format_ground_speed(speed_kt: float | None) -> str:
     return f"{int(round(speed_kt))}"
 
 
-def _format_vertical_rate(vs_fpm: float | None) -> str:
-    if vs_fpm is None:
+def _format_elapsed_remaining(flight: Flight) -> str:
+    """Compact "E elapsed, R remaining" hours readout for the bottom-left stat.
+
+    Both values are decimal hours (one fractional digit). Uses scheduled
+    departure as t0 because that's all AirLabs supplies — within a few
+    minutes of actual takeoff for non-delayed flights. ``eta_utc`` is the
+    locally-computed ETA from current position + ground speed, so remaining
+    decreases smoothly as the flight progresses. Negative deltas are
+    clamped to zero. Returns ``"--"`` when either timestamp is unknown.
+
+    The cell is 43 px wide and the string is rendered in FONT_4X6
+    (see ``_build_value_cell_4x6``); ``"E1.2, R0.8"`` measures 41 px and
+    fits with one decimal hour on each side.
+    """
+    from datetime import datetime, timezone
+    dep_dt = _parse_iso_utc(flight.scheduled_departure_utc)
+    eta_dt = _parse_iso_utc(flight.eta_utc)
+    if dep_dt is None or eta_dt is None:
         return "--"
-    hundreds = int(round(vs_fpm / 100.0))
-    if hundreds == 0:
-        return "0"
-    sign = "+" if hundreds > 0 else "-"
-    return f"{sign}{abs(hundreds)}"
+    now = datetime.now(timezone.utc)
+    elapsed_h = max(0.0, (now - dep_dt).total_seconds() / 3600.0)
+    remaining_h = max(0.0, (eta_dt - now).total_seconds() / 3600.0)
+    return f"E{elapsed_h:.1f}, R{remaining_h:.1f}"
 
 
 _COMPASS_POINTS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
@@ -325,6 +340,30 @@ def _build_value_cell(value: str, color: Color, cell_w: int) -> Widget:
     )
 
 
+def _build_value_cell_4x6(value: str, color: Color, cell_w: int) -> Widget:
+    """Value-only cell rendered in FONT_4X6 — used for compound strings that
+    don't fit the cell at FONT_5X7 (e.g. "E1.2, R0.8"). 9-tall cell with a
+    6-tall glyph: 2 px top pad, 6 px text row, 1 px bottom pad.
+    """
+    value_w = min(cell_w, FONT_4X6.measure(value)[0])
+    left_pad = max(0, (cell_w - value_w) // 2)
+    right_pad = max(0, cell_w - value_w - left_pad)
+    centered = Row(
+        gap=0,
+        sizes=[left_pad, value_w, right_pad],
+        children=[
+            _spacer(),
+            Text(text=value, font=FONT_4X6, align="left", overflow="clip", color=color),
+            _spacer(),
+        ],
+    )
+    return Column(
+        gap=0,
+        sizes=[2, 6, 1],
+        children=[_spacer(), centered, _spacer()],
+    )
+
+
 def _build_stats_row(flight: Flight) -> Widget:
     delta_label, delta_value, delta_color = _format_schedule_delta(flight)
     if delta_label:
@@ -346,7 +385,7 @@ def _build_stats_row(flight: Flight) -> Widget:
         _build_stat_cell("A", _format_altitude(flight.altitude_ft), STAT_CELL_W_RIGHT),
     )
     bottom = _subrow(
-        _build_stat_cell("V", _format_vertical_rate(flight.vertical_rate_fpm), STAT_CELL_W_LEFT),
+        _build_value_cell_4x6(_format_elapsed_remaining(flight), COLOR_VALUE, STAT_CELL_W_LEFT),
         delta_cell,
     )
     return Column(

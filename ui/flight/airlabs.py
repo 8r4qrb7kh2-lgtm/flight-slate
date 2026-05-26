@@ -1,9 +1,10 @@
 """AirLabs flight-schedule lookup for delay/early calculations.
 
-Used to obtain *scheduled* arrival times that FR24's API doesn't return.
-We compare AirLabs' ``arr_time_utc`` (scheduled) against the slate's locally
-computed ``eta_utc`` (current estimate) to compute "X min late / early" for
-the displayed flight.
+Used to obtain *scheduled* departure and arrival times that FR24's API
+doesn't return. We compare AirLabs' ``arr_time_utc`` (scheduled) against
+the slate's locally computed ``eta_utc`` (current estimate) to compute
+"X min late / early" for the displayed flight, and use ``dep_time_utc``
+to drive the "hours elapsed / hours remaining" readout.
 
 Uses the ``/schedules`` endpoint rather than ``/flight``: ``/flight`` returns
 *one* instance per callsign and frequently picks the wrong one when a flight
@@ -48,8 +49,10 @@ _NEGATIVE_TTL_S = 3600.0
 _TAIL_NUMBER_RE = re.compile(r"^N\d+[A-Z]*$")
 
 
-# (callsign, dest_iata) → (cached_at, scheduled_arrival_utc_iso)
-_known: dict[tuple[str, str], tuple[float, str]] = {}
+# (callsign, dest_iata) → (cached_at, (scheduled_departure_utc_iso, scheduled_arrival_utc_iso))
+# Either element of the inner tuple may be ``None`` if the AirLabs record
+# omitted the corresponding field.
+_known: dict[tuple[str, str], tuple[float, tuple[str | None, str | None]]] = {}
 _negative: dict[tuple[str, str], float] = {}
 
 # Wall-clock timestamp (epoch seconds) before which AirLabs has told us the
@@ -71,8 +74,11 @@ def _looks_icao(callsign: str) -> bool:
     return len(callsign) >= 4 and callsign[:3].isalpha()
 
 
-def _arrival_to_iso_utc(value: Any) -> str | None:
-    """Convert an AirLabs ``YYYY-MM-DD HH:MM`` UTC string to ISO-8601 with Z."""
+def _naive_utc_to_iso(value: Any) -> str | None:
+    """Convert an AirLabs ``YYYY-MM-DD HH:MM`` UTC string to ISO-8601 with Z.
+
+    Used for both ``arr_time_utc`` and ``dep_time_utc`` — same format.
+    """
     if not isinstance(value, str):
         return None
     text = value.strip()
@@ -152,10 +158,14 @@ def _mark_quota_blocked(error_code: str) -> None:
     )
 
 
-def get_scheduled_arrival(
+def get_schedule(
     callsign: str, *, dest_iata: str | None = None
-) -> str | None:
-    """Return the scheduled arrival as an ISO-8601 UTC string, or None.
+) -> tuple[str | None, str | None]:
+    """Return ``(scheduled_departure_utc, scheduled_arrival_utc)``.
+
+    Each element is an ISO-8601 UTC string (``YYYY-MM-DDTHH:MM:SSZ``) when
+    AirLabs supplied that field for the matched schedule instance, otherwise
+    ``None``. When no schedule is found at all the result is ``(None, None)``.
 
     ``dest_iata`` (when known) filters AirLabs' schedule list to the matching
     route, which makes instance selection unambiguous in the common case.
@@ -163,10 +173,10 @@ def get_scheduled_arrival(
     a snapshot fetch (one call adds ~100-300 ms on miss).
     """
     if not callsign:
-        return None
+        return (None, None)
     cs = _normalize_callsign(callsign)
     if not cs or _TAIL_NUMBER_RE.match(cs):
-        return None
+        return (None, None)
     arr = (dest_iata or "").upper()
     key = (cs, arr)
     now = time.monotonic()
@@ -179,14 +189,14 @@ def get_scheduled_arrival(
         _known.pop(key, None)
     neg_ts = _negative.get(key)
     if neg_ts is not None and (now - neg_ts) < _NEGATIVE_TTL_S:
-        return None
+        return (None, None)
 
     if _blocked_until_wall is not None and time.time() < _blocked_until_wall:
-        return None
+        return (None, None)
 
     api_key = os.environ.get("AIRLABS_API_KEY", "").strip()
     if not api_key:
-        return None
+        return (None, None)
 
     # ADSB callsigns are usually ICAO-format (3-letter airline prefix).
     # AirLabs returns null on flight_iata for those; flight_icao matches.
@@ -202,7 +212,7 @@ def get_scheduled_arrival(
         with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as response:
             data = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError):
-        return None  # transient — don't poison the cache, retry next snapshot
+        return (None, None)  # transient — don't poison the cache, retry next snapshot
 
     # Quota exhaustion arrives as a top-level ``error`` rather than a
     # transport-level failure, so we have to inspect the JSON body.
@@ -212,16 +222,25 @@ def get_scheduled_arrival(
             code = str(error.get("code") or "")
             if "limit_exceeded" in code:
                 _mark_quota_blocked(code)
-                return None
+                return (None, None)
 
     payload = data.get("response") if isinstance(data, dict) else None
     items = payload if isinstance(payload, list) else []
     chosen = _select_instance([r for r in items if isinstance(r, dict)])
     if chosen is not None:
-        iso = _arrival_to_iso_utc(chosen.get("arr_time_utc"))
-        if iso is not None:
-            _known[key] = (now, iso)
-            return iso
+        dep_iso = _naive_utc_to_iso(chosen.get("dep_time_utc"))
+        arr_iso = _naive_utc_to_iso(chosen.get("arr_time_utc"))
+        if dep_iso is not None or arr_iso is not None:
+            schedule = (dep_iso, arr_iso)
+            _known[key] = (now, schedule)
+            return schedule
 
     _negative[key] = now
-    return None
+    return (None, None)
+
+
+def get_scheduled_arrival(
+    callsign: str, *, dest_iata: str | None = None
+) -> str | None:
+    """Backward-compat wrapper: return only the scheduled arrival."""
+    return get_schedule(callsign, dest_iata=dest_iata)[1]

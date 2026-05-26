@@ -123,6 +123,7 @@ class Flight:
     route_verified: bool
     # ISO-8601 UTC strings; None when the data source didn't supply them.
     eta_utc: str | None = None  # FR24 estimated time of arrival
+    scheduled_departure_utc: str | None = None  # AirLabs scheduled departure
     scheduled_arrival_utc: str | None = None  # AirLabs scheduled arrival
 
 
@@ -577,10 +578,13 @@ def _build_flight(
     on_ground = ac.get("alt_baro") == "ground"
 
     eta_utc = _compute_eta_utc(lat, lon, ground_speed_kt, dest_coords)
-    scheduled_arrival_utc = (
-        airlabs.get_scheduled_arrival(callsign, dest_iata=destination_iata)
-        if enrich_route else None
-    )
+    if enrich_route:
+        scheduled_departure_utc, scheduled_arrival_utc = airlabs.get_schedule(
+            callsign, dest_iata=destination_iata
+        )
+    else:
+        scheduled_departure_utc = None
+        scheduled_arrival_utc = None
 
     return Flight(
         icao24=str(ac.get("hex", "")).lower(),
@@ -609,6 +613,7 @@ def _build_flight(
         on_ground=on_ground,
         route_verified=route_verified,
         eta_utc=eta_utc,
+        scheduled_departure_utc=scheduled_departure_utc,
         scheduled_arrival_utc=scheduled_arrival_utc,
     )
 
