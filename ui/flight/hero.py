@@ -553,6 +553,9 @@ class _SweepState:
 
     def __init__(self) -> None:
         self.displayed: dict[str, "AircraftPing"] = {}
+        # Per-plane positions frozen at the two prior sweep crossings (polar
+        # bearing_deg, distance_nm), newest first. Excludes the current head.
+        self.trails: dict[str, list[tuple[float, float]]] = {}
         self.last_sweep_deg: float | None = None
 
 
@@ -619,10 +622,18 @@ class Radar(Widget):
                 continue
             current_by_id[ping.icao24] = ping
             if _sweep_arc_covers(prev_sweep_deg, sweep_deg, ping.bearing_deg):
+                # The position the sweep last froze becomes a trail point, so the
+                # two grey dots track the prior two sweeps rather than API polls.
+                prior = _sweep_state.displayed.get(ping.icao24)
+                if prior is not None:
+                    trail = _sweep_state.trails.setdefault(ping.icao24, [])
+                    trail.insert(0, (prior.bearing_deg, prior.distance_nm))
+                    del trail[2:]
                 _sweep_state.displayed[ping.icao24] = ping
         for icao in list(_sweep_state.displayed.keys()):
             if icao not in current_by_id:
                 del _sweep_state.displayed[icao]
+                _sweep_state.trails.pop(icao, None)
         _sweep_state.last_sweep_deg = sweep_deg
 
         with canvas.clip(rect):
@@ -682,13 +693,14 @@ class Radar(Widget):
                 x, y = project(bearing_deg, frac)
                 return int(round(x)), int(round(y))
 
-            for ping in _sweep_state.displayed.values():
+            for icao, ping in _sweep_state.displayed.items():
                 if ping.distance_nm > radius_nm:
                     continue
                 is_selected = bool(ping.icao24) and ping.icao24 == selected_icao
                 head_color = COLOR_RADAR_HEAD_SELECTED if is_selected else COLOR_RADAR_HEAD_NORMAL
 
                 head = _project_polar(ping.bearing_deg, ping.distance_nm)
+                sweep_trail = _sweep_state.trails.get(icao, ())
 
                 if ping.track_deg is not None:
                     track_rel = math.radians(ping.track_deg - rotation_deg)
@@ -698,8 +710,8 @@ class Radar(Widget):
                     synth_dx = synth_dy = 0.0
 
                 def _pick_trail(slot_index: int, used: tuple[tuple[int, int], ...]) -> tuple[int, int] | None:
-                    if slot_index < len(ping.trail):
-                        bearing, distance = ping.trail[slot_index]
+                    if slot_index < len(sweep_trail):
+                        bearing, distance = sweep_trail[slot_index]
                         candidate = _project_polar(bearing, distance)
                         if candidate not in used:
                             return candidate
