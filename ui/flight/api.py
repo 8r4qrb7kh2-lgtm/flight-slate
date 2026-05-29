@@ -69,6 +69,23 @@ TRUE_AIRLINE_NAMES: dict[str, str] = {
     "ACA": "Air Canada",
 }
 
+# Aircraft to drop entirely from the snapshot, regardless of where they are.
+# Matched (case-insensitively) against both the registration (``r``) and the
+# callsign (``flight``) fields, since GA aircraft often broadcast their
+# N-number in either. These never appear on the radar or as the hero flight,
+# even when squarely inside the view cone.
+IGNORED_REGISTRATIONS: frozenset[str] = frozenset({
+    "N952CP",  # local helicopter that constantly loiters in view
+})
+
+
+def _is_ignored(entry: dict[str, Any]) -> bool:
+    """True if this aircraft is on the ignore list (by registration or callsign)."""
+    for raw in (entry.get("r"), entry.get("flight")):
+        if raw is not None and str(raw).strip().upper() in IGNORED_REGISTRATIONS:
+            return True
+    return False
+
 
 @dataclass(frozen=True)
 class Region:
@@ -643,6 +660,10 @@ def fetch_air_snapshot(
 
     for entry in aircraft:
         if not isinstance(entry, dict):
+            continue
+        if _is_ignored(entry):
+            # Permanently filtered aircraft (e.g. a loitering local helicopter):
+            # drop before it can land on the radar or be picked as the hero.
             continue
         lat_raw = entry.get("lat")
         lon_raw = entry.get("lon")
