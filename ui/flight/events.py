@@ -29,8 +29,12 @@ except ImportError:
 
 _REFRESH_S = 600.0          # 10 min — calendars don't change minute-to-minute
 _RETRY_AFTER_FAIL_S = 90.0
-_FETCH_HORIZON = timedelta(hours=48)  # cache 2x the lookahead so stale-but-valid data still works
-_LOOKAHEAD = timedelta(hours=24)
+# Look a week ahead: events are typically scheduled days-to-weeks out (shifts,
+# meetings), so a tight 24h window left every upcoming event off-screen. A week
+# also matches the footer's weekday-name format ("Sun 9 AM"), which is only
+# unambiguous within 7 days.
+_LOOKAHEAD = timedelta(days=7)
+_FETCH_HORIZON = timedelta(days=14)  # cache 2x the lookahead so stale-but-valid data still works
 
 
 @dataclass(frozen=True)
@@ -170,7 +174,7 @@ def next_event() -> UpcomingEvent | None:
     An event currently in progress (start ≤ now < end) is returned — callers
     can check that range to render it as "happening now". Returns ``None``
     when the cache is empty, the feed isn't configured, or nothing is scheduled
-    in the next 24 hours.
+    in the next 7 days.
     """
     _refresh_if_stale()
     if _cached is None:
