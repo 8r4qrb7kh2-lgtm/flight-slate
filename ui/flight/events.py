@@ -13,7 +13,6 @@ calling configure) leaves the cache disabled — ``next_event()`` returns
 from __future__ import annotations
 
 import time
-import urllib.error
 import urllib.request
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -47,8 +46,12 @@ class UpcomingEvent:
 _ics_urls: tuple[str, ...] = ()
 _executor: ThreadPoolExecutor | None = None
 _cached: list[UpcomingEvent] | None = None
+# Last good events for each feed, keyed by URL. A feed that fails to fetch or
+# parse on a given cycle (network blip, HTTP 429 rate-limit, malformed payload)
+# retains its previous entry here, so one flaky feed can't blank the timeline.
+_cached_by_url: dict[str, list[UpcomingEvent]] = {}
 _next_attempt: float = 0.0
-_pending: Future[list[UpcomingEvent] | None] | None = None
+_pending: Future[tuple[list[UpcomingEvent] | None, bool]] | None = None
 _warned_missing_deps: bool = False
 
 
@@ -92,31 +95,37 @@ def _ensure_aware(value: datetime) -> datetime:
     return value
 
 
-def _fetch_events() -> list[UpcomingEvent] | None:
+def _fetch_events() -> tuple[list[UpcomingEvent] | None, bool]:
+    """Refresh each feed independently; return ``(merged_timeline, any_fresh)``.
+
+    Each feed updates its own slice of ``_cached_by_url`` only when it fetches
+    and parses cleanly. A feed that errors this cycle (network, HTTP 429, bad
+    payload) is skipped and keeps its last-known events, so one flaky feed can't
+    wipe the others — or itself — from the display.
+
+    ``any_fresh`` is True when at least one feed refreshed; the caller uses it to
+    pick the retry cadence. The merged list is ``None`` only when nothing is
+    cached at all (cold start with every feed failing).
+    """
     urls = _ics_urls
     if not urls or icalendar is None or recurring_ical_events is None:
-        return None
+        return None, False
 
     now = datetime.now(timezone.utc)
     horizon_end = now + _FETCH_HORIZON
-    out: list[UpcomingEvent] = []
-    any_succeeded = False
+    any_fresh = False
 
     for url in urls:
         try:
             request = urllib.request.Request(url, headers={"User-Agent": "flight-slate/0.1"})
             with urllib.request.urlopen(request, timeout=15.0) as response:
                 payload = response.read()
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
-            continue
-
-        try:
             cal = icalendar.Calendar.from_ical(payload)
             occurrences = recurring_ical_events.of(cal).between(now, horizon_end)
         except Exception:
-            continue
+            continue  # keep this feed's previously cached events, if any
 
-        any_succeeded = True
+        feed_events: list[UpcomingEvent] = []
         for ev in occurrences:
             if str(ev.get("STATUS", "")).upper() == "CANCELLED":
                 continue
@@ -135,13 +144,21 @@ def _fetch_events() -> list[UpcomingEvent] | None:
                 end = _ensure_aware(end_raw)
             else:
                 end = start + timedelta(hours=1)
-            out.append(UpcomingEvent(title=title, start=start, end=end))
+            feed_events.append(UpcomingEvent(title=title, start=start, end=end))
 
-    if not any_succeeded:
-        return None  # All feeds failed — retry sooner. A partial succeed returns whatever we got.
+        _cached_by_url[url] = feed_events
+        any_fresh = True
 
-    out.sort(key=lambda e: e.start)
-    return out
+    # Drop slices for feeds that are no longer configured.
+    for stale_url in set(_cached_by_url) - set(urls):
+        del _cached_by_url[stale_url]
+
+    if not _cached_by_url:
+        return None, any_fresh
+
+    merged = [ev for feed_events in _cached_by_url.values() for ev in feed_events]
+    merged.sort(key=lambda e: e.start)
+    return merged, any_fresh
 
 
 def _refresh_if_stale() -> None:
@@ -153,14 +170,14 @@ def _refresh_if_stale() -> None:
         pending = _pending
         _pending = None
         try:
-            result = pending.result()
+            merged, any_fresh = pending.result()
         except Exception:
-            result = None
-        if result is not None:
-            _cached = result
-            _next_attempt = time.monotonic() + _REFRESH_S
-        else:
-            _next_attempt = time.monotonic() + _RETRY_AFTER_FAIL_S
+            merged, any_fresh = None, False
+        if merged is not None:
+            _cached = merged
+        # Full interval once any feed refreshed; retry soon only if every feed
+        # failed (so we don't hammer a single rate-limited feed every 90s).
+        _next_attempt = time.monotonic() + (_REFRESH_S if any_fresh else _RETRY_AFTER_FAIL_S)
 
     now_mono = time.monotonic()
     if _pending is None and now_mono >= _next_attempt:
