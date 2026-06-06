@@ -146,17 +146,17 @@ def test_all_day_and_cancelled_events_skipped(feeds):
     assert {e.title for e in merged} == {"timed"}
 
 
-def test_next_event_uses_seven_day_lookahead(feeds):
-    """Events within a week surface; those beyond it do not."""
+def test_next_event_uses_24h_lookahead(feeds):
+    """Events within 24h surface; those beyond it do not."""
     now = datetime.now(timezone.utc)
-    within = UpcomingEvent("within-week", now + timedelta(days=3), now + timedelta(days=3, hours=1))
-    beyond = UpcomingEvent("beyond-week", now + timedelta(days=10), now + timedelta(days=10, hours=1))
+    within = UpcomingEvent("within-day", now + timedelta(hours=12), now + timedelta(hours=13))
+    beyond = UpcomingEvent("beyond-day", now + timedelta(days=3), now + timedelta(days=3, hours=1))
 
     events._cached = [within, beyond]
-    assert events.next_event() is within  # nearest within 7 days
+    assert events.next_event() is within  # nearest within 24h
 
     events._cached = [beyond]
-    assert events.next_event() is None  # 10 days out is past the window
+    assert events.next_event() is None  # 3 days out is past the window
 
 
 def test_next_event_returns_in_progress(feeds):
