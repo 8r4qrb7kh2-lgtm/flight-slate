@@ -68,7 +68,9 @@ def configure(ics_urls: "str | list[str] | tuple[str, ...] | None") -> None:
     if isinstance(ics_urls, str):
         normalized = (ics_urls,)
     else:
-        normalized = tuple(u for u in ics_urls if u)
+        # De-duplicate (order-preserving): a repeated URL would otherwise be
+        # fetched twice every cycle, and extra requests only aggravate rate limits.
+        normalized = tuple(dict.fromkeys(u for u in ics_urls if u))
     if not normalized:
         _ics_urls = ()
         return
@@ -174,9 +176,11 @@ def _refresh_if_stale() -> None:
             merged, any_fresh = None, False
         if merged is not None:
             _cached = merged
-        # Full interval once any feed refreshed; retry soon only if every feed
-        # failed (so we don't hammer a single rate-limited feed every 90s).
-        _next_attempt = time.monotonic() + (_REFRESH_S if any_fresh else _RETRY_AFTER_FAIL_S)
+        # Retry fast only on a cold start with nothing to show yet. Once events
+        # are cached, poll at the normal cadence even when every feed failed this
+        # cycle — otherwise a sole rate-limited feed gets re-hit every 90s.
+        cold_start = not any_fresh and _cached is None
+        _next_attempt = time.monotonic() + (_RETRY_AFTER_FAIL_S if cold_start else _REFRESH_S)
 
     now_mono = time.monotonic()
     if _pending is None and now_mono >= _next_attempt:

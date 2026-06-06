@@ -7,8 +7,10 @@ independent of real ICS parsing.
 """
 from __future__ import annotations
 
+import time
 import types
 import urllib.request
+from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -165,3 +167,42 @@ def test_next_event_returns_in_progress(feeds):
     live = UpcomingEvent("live", now - timedelta(minutes=10), now + timedelta(hours=1))
     events._cached = [live]
     assert events.next_event() is live
+
+
+def test_configure_deduplicates_urls(feeds):
+    """A repeated feed URL collapses to one so it isn't fetched twice per cycle."""
+    events.configure(["http://a", "http://a", "http://b"])
+    assert list(events._ics_urls) == ["http://a", "http://b"]
+
+
+def test_retry_is_fast_only_on_cold_start(feeds):
+    """Cold start with nothing cached retries quickly to fill the cache."""
+    events._ics_urls = ("http://a",)
+    events._executor = object()  # truthy sentinel; must not be invoked
+    events._cached = None
+    fut = Future()
+    fut.set_result((None, False))  # nothing fresh, nothing cached
+    events._pending = fut
+    events._next_attempt = 0.0
+    t0 = time.monotonic()
+    events._refresh_if_stale()
+    waited = events._next_attempt - t0
+    assert waited <= events._RETRY_AFTER_FAIL_S + 5
+    assert waited < events._REFRESH_S
+
+
+def test_retry_uses_full_interval_when_cache_is_warm(feeds):
+    """All feeds failing while events are still cached must NOT trigger a fast
+    retry loop — that would hammer a sole rate-limited feed every 90s."""
+    soon = datetime.now(timezone.utc) + timedelta(hours=6)
+    cached = [UpcomingEvent("A", soon, soon + timedelta(hours=1))]
+    events._ics_urls = ("http://a",)
+    events._executor = object()  # truthy sentinel; must not be invoked
+    events._cached = cached
+    fut = Future()
+    fut.set_result((cached, False))  # retained, but no feed refreshed this cycle
+    events._pending = fut
+    events._next_attempt = 0.0
+    t0 = time.monotonic()
+    events._refresh_if_stale()
+    assert events._next_attempt - t0 >= events._REFRESH_S - 5
